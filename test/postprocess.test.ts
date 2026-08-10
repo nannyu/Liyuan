@@ -161,9 +161,10 @@ test("状态栏 body 内 summary 等标签 unwrap，围栏保留", () => {
 
 test("prepareDisplayText: 先皮肤再策略——state 标记不被 unwrap 拆掉", () => {
 	const raw = `叙事一句。\n\n<state1>\n时间: 清晨\n地点: 街道\n</state1>`;
-	// 无皮肤：unwrap 掉 state1
+	// 无皮肤：state1 是状态栏（panel）——原样保留，前端抽成梨园统一状态卡。
+	// （8/10 修：旧行为是 unwrap 剥壳、body 摊平进正文＝实弹「状态栏吐源码」）
 	const plain = prepareDisplayText(raw, null);
-	assert.ok(!plain.includes("<state1>"));
+	assert.ok(plain.includes("<state1>"));
 	assert.ok(plain.includes("时间: 清晨"));
 
 	// 有皮肤：先换成围栏 HTML，再跳过 unwrap

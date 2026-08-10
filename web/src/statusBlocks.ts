@@ -14,11 +14,11 @@ export function normalizeStatusTag(tag: string): string {
 	return tag.trim().toLowerCase().replace(/_/g, "");
 }
 
-/** 名称是否像状态栏（与 src/postprocess PANEL_NAME_RE 同思路） */
+/** 名称是否像状态栏（与 src/postprocess PANEL_NAME_RE 同思路，含 stateN 序号形） */
 export function isPanelTagName(tag: string): boolean {
 	const raw = tag.trim();
 	const n = normalizeStatusTag(raw);
-	return /^(?:status(?:block|bar)?|normalstatus|specialstatus|char(?:acter)?status|状态|状态栏|人物状态|场景状态)$/i.test(
+	return /^(?:status(?:block|bar)?|normalstatus|specialstatus|char(?:acter)?status|state\d+|状态|状态栏|人物状态|场景状态)$/i.test(
 		n,
 	) || /^(?:status(?:_?block|bar)?|normal_?status|special_?status)$/i.test(raw);
 }
@@ -128,7 +128,7 @@ export function splitStatusParts(text: string): StatusPart[] {
 export function stripOrphanStatusTags(text: string): string {
 	return text
 		.replace(
-			/<\/?(?:StatusBlock|status_block|statusblock|status|statusbar|normal_status|special_status)(?:\s[^>]*)?>/gi,
+			/<\/?(?:StatusBlock|status_block|statusblock|status|statusbar|normal_status|special_status|state_?\d+)(?:\s[^>]*)?>/gi,
 			"",
 		)
 		.replace(/^\s*$/gm, "")

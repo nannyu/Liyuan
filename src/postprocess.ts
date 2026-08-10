@@ -36,9 +36,9 @@ const OPEN_TAG_RE = new RegExp(`<(${TAG_NAME})(\\s[^>]*)?>`, "g");
 /** 思考 / 草稿 / 分析 → 折叠 */
 const FOLD_NAME_RE =
 	/^(?:thinking|think|thoughts?|draft(?:_?notes)?|reasoning|reason(?:ing)?|analysis|analy[sz]e|descriptive_?analysis|cot|chain_?of_?thought|scaffold|memo|notes?|推演|思考|思维|草稿|分析|笔记|备忘|内心推演)$/i;
-/** 状态栏 → 面板 */
+/** 状态栏 → 面板（stateN：多状态栏卡的序号形——8/10 实弹：漏认导致 unwrap 剥壳吐源码） */
 const PANEL_NAME_RE =
-	/^(?:status(?:_?block|bar)?|normal_?status|special_?status|char(?:acter)?_?status|状态|状态栏|人物状态|场景状态)$/i;
+	/^(?:status(?:_?block|bar)?|normal_?status|special_?status|char(?:acter)?_?status|state_?\d+|状态|状态栏|人物状态|场景状态)$/i;
 /** 仪式/越狱回显 → 整块扔掉 */
 const STRIP_NAME_RE = /^(?:haurki|haurki准则|jailbreak|system_?prompt|oai_?system|anti_?reject)$/i;
 

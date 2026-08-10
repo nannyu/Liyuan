@@ -380,10 +380,24 @@ function roundCardFor(
  * 但也不能无脑全拼——纯文本尾巴（"就这样吧。"）是收笔闲聊，不该进正文。
  */
 const FORMAT_TAIL_RE = /<(?:[A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff.\-]*)(?:\s[^>]*)?\/?\s*>/;
-const looksLikeFormatTail = (tail: string): boolean =>
-	FORMAT_TAIL_RE.test(tail) || /^```/m.test(tail);
+const FENCE_LINE_RE = /^```/m;
 
-const mergeFinalText = (draft: string, text: string): string => {
+/**
+ * 尾巴里格式内容的起点（第一个尖括号标签或行首 ``` 围栏）；没有 → -1。
+ *
+ * 8/10 实弹收口：旧口径整串检验、整串拼接——元话语（收笔自检逐条、ask 开场白
+ * 起了又劝退）挂在格式块前面时跟着一起进定稿（HK 5 会话 11 拍：7 个裸尾巴段
+ * 里 3 个带元话语，41 个稿段 0 违约）。改为**只取格式内容**：从第一个标签/围栏
+ * 起切，之前的自由文本一律丢弃；纯自由文本尾巴（闲聊收笔）仍整段不进正文。
+ */
+export const formatTailStart = (tail: string): number => {
+	const tag = FORMAT_TAIL_RE.exec(tail)?.index ?? -1;
+	const fence = FENCE_LINE_RE.exec(tail)?.index ?? -1;
+	if (tag < 0) return fence;
+	return fence < 0 ? tag : Math.min(tag, fence);
+};
+
+export const mergeFinalText = (draft: string, text: string): string => {
 	const d = draft.trim();
 	const t = text.trim();
 	if (!d) return t;
@@ -393,8 +407,9 @@ const mergeFinalText = (draft: string, text: string): string => {
 	// text 含稿件：取稿件之后的增量（尾巴在后）；不含：整段视作尾巴
 	const idx = t.indexOf(d);
 	const tail = idx >= 0 ? t.slice(idx + d.length) : t;
-	if (!looksLikeFormatTail(tail)) return d;
-	return [d, tail].filter(Boolean).join("\n\n");
+	const from = formatTailStart(tail);
+	if (from < 0) return d;
+	return [d, tail.slice(from).trim()].filter(Boolean).join("\n\n");
 };
 
 /**
