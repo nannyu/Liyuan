@@ -266,6 +266,7 @@ function Stage-Clean {
     # root-level dev scratch (underscore convention) + probe dumps
     "_*",
     "TESTING.md",
+    "CLAUDE.md",
     "docs\st-ux-inventory.md",
     "docs\superpowers",
     # 内部架构设计文档：研发过程记录（含逆向分析路径、未修问题定位、
