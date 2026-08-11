@@ -182,6 +182,17 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	draftRef.current = draft;
 	const activeFile = files.data?.active ?? null;
 
+	// 有效性视图（8/11 用户定向）：条目按去向分组，不再按通道——去向来自预设 skill manifest
+	const fates = usePanelData(
+		() => apiGet<{ entries: Array<{ blockId: string; fate: string }> }>("/api/preset-skills"),
+		{ watchAgent: true, cacheKey: "/api/preset-skills" },
+	);
+	const contract = usePanelData(
+		() => apiGet<{ modules: Array<{ tag: string; source: string; form: string; hint?: string }>; declared: boolean; file: string }>("/api/output-contract"),
+		{ watchAgent: true, cacheKey: "/api/output-contract" },
+	);
+	const fateOf = useMemo(() => new Map((fates.data?.entries ?? []).map((e) => [e.blockId, e.fate])), [fates.data]);
+
 	const loadFromDisk = useCallback(async () => {
 		setLoadingDetail(true);
 		setLoadError(null);
@@ -274,18 +285,26 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		return { known, unknown };
 	}, [draft]);
 
-	/** 页签：采样参数 | 系统区 | 末端注入（点按钮切换，不堆叠） */
-	const [tab, setTab] = useState<"samplers" | "system" | "postHistory">("samplers");
+	/** 页签：参数 | 提示词（常驻送模） | skill（拉取包） | 状态栏（输出合约）——按有效去向，不按通道 */
+	const [tab, setTab] = useState<"samplers" | "prompt" | "skill" | "contract">("samplers");
 
-	const grouped = useMemo(() => {
-		const map = new Map<string, DraftBlock[]>();
-		for (const b of draft?.blocks ?? []) {
-			const list = map.get(b.channel) ?? [];
-			list.push(b);
-			map.set(b.channel, list);
-		}
-		return [...map.entries()];
-	}, [draft]);
+	// 去向判定：常驻*→提示词；skill:*→skill；其余（退场/仅规则提取）＝失效，不再送模、不再显示。
+	// 无判定信息（manifest 未生成/新块）不隐藏——宁多显不误删。
+	const destOf = useCallback(
+		(blockId: string): "prompt" | "skill" | "dead" => {
+			const fate = fateOf.get(blockId);
+			if (!fate) return "prompt";
+			if (fate.includes("常驻")) return "prompt";
+			if (fate.includes("skill:")) return "skill";
+			return "dead";
+		},
+		[fateOf],
+	);
+	const byDest = useMemo(() => {
+		const map = { prompt: [] as DraftBlock[], skill: [] as DraftBlock[], dead: [] as DraftBlock[] };
+		for (const b of draft?.blocks ?? []) map[destOf(b.id)].push(b);
+		return map;
+	}, [draft, destOf]);
 
 	const selectPreset = (file: string | null) =>
 		run(async () => {
@@ -490,25 +509,35 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 									className={`preset-tab ${tab === "samplers" ? "active" : ""}`}
 									onClick={() => setTab("samplers")}
 								>
-									采样参数
+									参数
 								</button>
-								{(["system", "postHistory"] as const).map((ch) => {
-									const blocks = grouped.find(([c]) => c === ch)?.[1] ?? [];
+								{([["prompt", "提示词"], ["skill", "skill"]] as const).map(([key, label]) => {
+									const blocks = byDest[key];
 									const on = blocks.filter((b) => b.enabled).length;
 									return (
 										<button
-											key={ch}
+											key={key}
 											type="button"
 											role="tab"
-											aria-selected={tab === ch}
-											className={`preset-tab ${tab === ch ? "active" : ""}`}
-											onClick={() => setTab(ch)}
+											aria-selected={tab === key}
+											className={`preset-tab ${tab === key ? "active" : ""}`}
+											onClick={() => setTab(key)}
 										>
-											{CHANNEL_LABEL[ch]}
+											{label}
 											<span className="preset-tab-count">{on}/{blocks.length}</span>
 										</button>
 									);
 								})}
+								<button
+									type="button"
+									role="tab"
+									aria-selected={tab === "contract"}
+									className={`preset-tab ${tab === "contract" ? "active" : ""}`}
+									onClick={() => setTab("contract")}
+								>
+									状态栏
+									<span className="preset-tab-count">{(contract.data?.modules ?? []).length}</span>
+								</button>
 							</div>
 
 							{tab === "samplers" && (
@@ -554,17 +583,19 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 							</section>
 							)}
 
-							{tab !== "samplers" &&
+							{(tab === "prompt" || tab === "skill") &&
 								(() => {
-									const channel = tab;
-									const blocks = grouped.find(([c]) => c === channel)?.[1] ?? [];
+									const blocks = byDest[tab];
 									const totalChars = blocks.reduce((n, b) => n + (b.enabled ? b.content.length : 0), 0);
 									const allOn = blocks.length > 0 && blocks.every((b) => b.enabled);
+									const deadChars = byDest.dead.reduce((n, b) => n + b.content.length, 0);
 									return (
 										<section className="sp-section">
 											<div className="preset-chan-head">
 												<span className="lore-meta">
-													{blocks.length} 块 · 启用 {totalChars.toLocaleString()} 字 · 开关立即生效，点条目展开编辑
+													{tab === "prompt"
+														? `常驻送模（破限/文风/边界，原文直通）：${blocks.length} 块 · 启用 ${totalChars.toLocaleString()} 字`
+														: `拉取包（方法论，模型按需 skill_read）：${blocks.length} 块 · 启用 ${totalChars.toLocaleString()} 字`}
 												</span>
 												{blocks.length > 0 && (
 													<button className="act" disabled={busy} onClick={() => toggleChannel(blocks, !allOn)}>
@@ -572,7 +603,7 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 													</button>
 												)}
 											</div>
-											{blocks.length === 0 && <div className="sp-empty">该预设无此通道块。</div>}
+											{blocks.length === 0 && <div className="sp-empty">无此去向的块。</div>}
 											{blocks.map((b) => (
 												<PresetBlockEditor
 													key={b.id}
@@ -581,9 +612,38 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 													onChange={(patch) => patchBlock(b.id, patch)}
 												/>
 											))}
+											{tab === "prompt" && byDest.dead.length > 0 && (
+												<div className="field-hint">
+													另有 {byDest.dead.length} 块 / {deadChars.toLocaleString()} 字已失效不再送模（旧环境的
+													COT/验算/包装类程序内容，机制已覆盖）。文件仍在 skills/预设-*/blocks/，改 manifest 去向可复活。
+												</div>
+											)}
 										</section>
 									);
 								})()}
+
+							{tab === "contract" && (
+								<section className="sp-section">
+									<div className="sp-hint">
+										谢幕注入照单点名的格式块（供数：{contract.data?.declared ? "装载期模型声明" : "识别器 v0"}）。
+										文件 {contract.data?.file ?? ".liyuan/output-contract.json"} 可手改，改了以文件为准。
+									</div>
+									{(contract.data?.modules ?? []).length === 0 && (
+										<div className="sp-empty">本套卡+预设无格式块要求（谢幕不注入，拍自然收束）。</div>
+									)}
+									{(contract.data?.modules ?? []).map((m) => (
+										<div key={m.tag} className="kv">
+											<span className="kv-k">
+												{m.form === "fence" ? `「${m.tag}」（\`\`\` 围栏块）` : `<${m.tag}${m.form === "placeholder" ? "/" : ""}>`}
+											</span>
+											<span className="kv-v">
+												{m.hint ? `${m.hint} · ` : ""}
+												{m.source}
+											</span>
+										</div>
+									))}
+								</section>
+							)}
 						</>
 					)}
 					{!draft && !missing && !loadingDetail && (

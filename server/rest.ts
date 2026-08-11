@@ -80,6 +80,7 @@ import {
 } from "../src/memory/index.ts";
 import { resolveConfigPath } from "../src/paths.ts";
 import { ensurePresetSkills, presetSkillDir, presetSkillSlug } from "../src/preset-skill.ts";
+import { parseContract } from "../src/stage/output-contract.ts";
 import type { WorldlineView } from "../src/worldline.ts";
 import {
 	appendLorebookFileEntry,
@@ -1353,6 +1354,14 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const dir = presetSkillDir(host.cwd, manifest.preset);
 				writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, "\t"), "utf8");
 				sendJson(res, 200, { ok: true });
+				return true;
+			}
+			// ---- 输出合约（谢幕点名清单，§4.B）：只读投影；文件用户可改、改了以文件为准 ----
+			case "GET /api/output-contract": {
+				const file = join(host.cwd, ".liyuan", "output-contract.json");
+				const modules = existsSync(file) ? (parseContract(readFileSync(file, "utf8")) ?? []) : [];
+				const declared = existsSync(join(host.cwd, ".liyuan", "output-contract.declared.json"));
+				sendJson(res, 200, { modules, declared, file: ".liyuan/output-contract.json" });
 				return true;
 			}
 			case "GET /api/skills": {

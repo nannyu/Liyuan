@@ -788,10 +788,14 @@ function PresetSkillSection({ toast }: { toast: (level: "info" | "warning" | "er
 			await apiPost("/api/preset-skills/fate", { blockId: e.blockId, fate: f });
 			reload();
 		}, `去向改为 ${f}`);
-	const groups: Array<["system" | "postHistory", string]> = [
-		["system", "system 通道"],
-		["postHistory", "末端注入通道"],
+	// 有效性分组（8/11 用户定向）：常驻*→提示词；skill:*→skill；其余=失效（折叠，改去向可复活）
+	const destOf = (fate: string): "prompt" | "skill" | "dead" =>
+		fate.includes("常驻") ? "prompt" : fate.includes("skill:") ? "skill" : "dead";
+	const groups: Array<["prompt" | "skill", string]> = [
+		["prompt", "→ 提示词（常驻送模）"],
+		["skill", "→ skill（拉取包）"],
 	];
+	const dead = data.entries.filter((e) => destOf(e.fate) === "dead");
 	return (
 		<section className="sp-section">
 			<h3 className="sp-h">
@@ -800,13 +804,13 @@ function PresetSkillSection({ toast }: { toast: (level: "info" | "warning" | "er
 			</h3>
 			<PanelStatus loading={loading} error={error} hasData={!!data} />
 			<div className="sp-hint">
-				每块一个标准文件（含关闭块与退场块，无一蒸发）。开关与预设页签同一真源；去向可改，重生成时保留。
+				每块一个标准文件（含关闭块与失效块，无一蒸发）。开关与预设页签同一真源；去向可改，重生成时保留。
 			</div>
-			{groups.map(([ch, label]) => {
-				const items = data.entries.filter((e) => e.channel === ch);
+			{groups.map(([key, label]) => {
+				const items = data.entries.filter((e) => destOf(e.fate) === key);
 				if (items.length === 0) return null;
 				return (
-					<div key={ch}>
+					<div key={key}>
 						<div className="sp-subhead">{label}（开 {items.filter((e) => e.enabled).length}/{items.length}）</div>
 						{items.map((e) => (
 							<PresetSkillRow key={e.blockId} e={e} busy={busy} onToggle={toggle} onFate={fate} toast={toast} />
@@ -814,6 +818,16 @@ function PresetSkillSection({ toast }: { toast: (level: "info" | "warning" | "er
 					</div>
 				);
 			})}
+			{dead.length > 0 && (
+				<details className="legacy-group">
+					<summary>
+						已失效不送模：{dead.length} 块 / {dead.reduce((n, e) => n + e.chars, 0).toLocaleString()} 字（旧环境程序内容，机制已覆盖；改去向可复活）
+					</summary>
+					{dead.map((e) => (
+						<PresetSkillRow key={e.blockId} e={e} busy={busy} onToggle={toggle} onFate={fate} toast={toast} />
+					))}
+				</details>
+			)}
 		</section>
 	);
 }
