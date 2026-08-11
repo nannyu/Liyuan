@@ -8,7 +8,7 @@
  * 本模块只读盘、不写盘、零 pi 依赖。
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 import { loadCardFile, readCardRawJson } from "../card.ts";
@@ -30,11 +30,11 @@ import {
 	findSplitTable,
 	lookupBlockRule,
 	reportItemFor,
-	splitBlockContent,
 	type AssemblyReportItem,
 	type PresetSplitTable,
 } from "../preset-split.ts";
 import { enabledBlocks, normalizeRpPreset, type PresetBlock, type RpPreset } from "../preset.ts";
+import { ensurePresetSkills, splitWithManifest, type PresetSkillManifest } from "../preset-skill.ts";
 import { resolveConfigPath } from "../paths.ts";
 import { DEFAULT_CONFIG, type CharacterCard, type LorebookEntry, type RpConfig } from "../types.ts";
 
@@ -44,6 +44,17 @@ import { DEFAULT_CONFIG, type CharacterCard, type LorebookEntry, type RpConfig }
  */
 const FORMAT_STACK_TAGS = ["w2g", "catsay", "UpdateVariable", "JSONPatch", "Analysis", "draft_notes", "wfeeling"];
 
+/**
+ * 预设常驻内容的一片（M-R1 原序化）：原文原序原通道，section 只作装配报告的记账标签，
+ * 不再决定送模呈现（旧 A/B/C 三节归拢＋引导语已按 PLAN-RECTIFY §2.1-9 拆除）。
+ */
+export interface ResidentPiece {
+	/** 出处块名（署名；变量/救出条目用「｛变量 X｝」「｛救出：源｝」形） */
+	name: string;
+	section: "A" | "B" | "C";
+	text: string;
+}
+
 export interface StageMaterials {
 	config: RpConfig;
 	card: CharacterCard;
@@ -52,17 +63,14 @@ export interface StageMaterials {
 	preset: RpPreset | null;
 	/** 拆层表（内置命中；null＝未知预设走四类兜底）——engine 对 postHistory 每拍复用 */
 	splitTable: PresetSplitTable | null;
-	/**
-	 * M-C 拆层产物（system 通道，静态）：
-	 * A 破限原文（原序）；B 文风与写法 / C 行为边界（归拢文本，含变量级救出与 supplements）。
-	 */
-	presetResidentA: PresetBlock[];
-	presetResidentB: string[];
-	presetResidentC: string[];
-	/** skill 包（两通道 D/E 静态拼装）：topic → 文本；writing_guide 工具供给 */
+	/** 预设→skill 投影 manifest（PLAN-PRESET-SKILL；用户改判在 engine 每拍重拆时也生效） */
+	presetSkillManifest: PresetSkillManifest | null;
+	/** M-C 拆层产物（system 通道，静态）：常驻内容按预设原序（M-R1：零归拢零引导语） */
+	presetResident: ResidentPiece[];
+	/** skill 包（两通道 D/E 静态拼装）：topic → 文本；skill_read 工具的进口兜底 */
 	skillPacks: Map<string, string>;
-	/** 预设声明了自定义用户代言边界（如话痨卡）→ checkSovereignty 降档 */
-	sovereigntyRelaxed: boolean;
+	/** skill 一等素材位（M-R2）：工作目录 skills/<name>/SKILL.md 扫描产物 */
+	skillFiles: SkillFile[];
 	/** 装配报告：每块性质/去向（PLAN §5.3 可视化；engine 落盘 .liyuan/preset-assembly.json） */
 	presetAssembly: AssemblyReportItem[];
 	/** system 渠道全部求值后内容——机械规则提取（extractDraftRules）用，扫全量含 H 类 */
@@ -95,6 +103,57 @@ export function loadStageConfig(cwd: string): RpConfig {
 		}
 	}
 	return setMountedLorebooks(raw, mountedLorebookPaths(raw));
+}
+
+/** skill 文件（agentskills.io 布局：skills/<name>/SKILL.md，frontmatter name+description 必填） */
+export interface SkillFile {
+	name: string;
+	/** L1 触发面（只写 when）；进 system `# 可用 skill` 索引 */
+	description: string;
+	/** 常驻档：正文随 system 送达（每拍都用的流程骨架）；拉取档走 skill_read */
+	resident: boolean;
+	body: string;
+}
+
+/**
+ * 扫描 skills/ 目录（M-R2 §4.C）。frontmatter 缺 name/description 的包跳过（不猜）；
+ * 解析是死板的数据读取——内容全部署名归包作者，harness 零改写。
+ */
+export function scanSkillFiles(cwd: string): SkillFile[] {
+	const root = join(cwd, "skills");
+	if (!existsSync(root)) return [];
+	const out: SkillFile[] = [];
+	for (const dir of readdirSync(root, { withFileTypes: true })) {
+		if (!dir.isDirectory()) continue;
+		const file = join(root, dir.name, "SKILL.md");
+		if (!existsSync(file)) continue;
+		let raw = "";
+		try {
+			raw = readFileSync(file, "utf8");
+		} catch {
+			continue;
+		}
+		// frontmatter: --- fence, key: value lines (no regex; line-based)
+		const rawLines = raw.split("\n").map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
+		if ((rawLines[0] ?? "").trim() !== "---") continue;
+		const endIdx = rawLines.findIndex((l, i) => i > 0 && l.trim() === "---");
+		if (endIdx < 0) continue;
+		const meta = new Map<string, string>();
+		for (const line of rawLines.slice(1, endIdx)) {
+			const colon = line.indexOf(":");
+			if (colon > 0) meta.set(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
+		}
+		const name = meta.get("name") ?? "";
+		const description = meta.get("description") ?? "";
+		if (!name || !description) continue;
+		out.push({
+			name,
+			description: description.slice(0, 1024),
+			resident: meta.get("resident") === "true",
+			body: rawLines.slice(endIdx + 1).join("\n").trim(),
+		});
+	}
+	return out;
 }
 
 /** 装载一拍所需全部素材；卡缺失/损坏时抛错（引擎转告用户，不演） */
@@ -147,6 +206,17 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 				preset = null;
 			}
 		}
+	} else {
+		// §4.A 默认预设：文风兜底迁出源码，数据发行（presets/默认.json，用户可见可改可换）。
+		// 只在没有用户预设时装；用户预设在场完全不装（不叠加）。
+		const defPath = join(cwd, "presets", "默认.json");
+		if (existsSync(defPath)) {
+			try {
+				preset = normalizeRpPreset(JSON.parse(readFileSync(defPath, "utf8")));
+			} catch {
+				preset = null;
+			}
+		}
 	}
 
 	// system 块按序宏求值：前块 setvar、后块 getvar；postHistory 用**共享** probe 环境
@@ -178,16 +248,21 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 	// ---- M-C 拆层（docs/PRESET-SPLIT-TAXONOMY.md）----
 	const allEnabledNames = preset ? preset.blocks.filter((b) => b.enabled).map((b) => b.name) : [];
 	const splitTable = preset ? findSplitTable(allEnabledNames) : null;
+	// 预设→skill 投影（PLAN-PRESET-SKILL）：装载瞬间生成/更新 skills/预设-<名>/（无一蒸发，
+	// manifest 可手改 fate）；生成失败不拦装配（投影是视图，不是装配依赖）
+	let presetSkillManifest: PresetSkillManifest | null = null;
+	try {
+		presetSkillManifest = ensurePresetSkills(cwd, preset);
+	} catch (err) {
+		console.error(`[preset-skill] 投影生成失败：${err instanceof Error ? err.message : String(err)}`);
+	}
 
-	const presetResidentA: PresetBlock[] = [];
-	const presetResidentB: string[] = [];
-	const presetResidentC: string[] = [];
+	const presetResident: ResidentPiece[] = [];
 	const skillPieces = new Map<string, string[]>();
 	const presetAssembly: AssemblyReportItem[] = [];
-	let sovereigntyRelaxed = false;
 	let auditLinesDropped = 0;
 
-	/** resident B/C 产物统一过句级验算过滤（M4.5 行为延续，双保险） */
+	/** resident B/C 产物统一过句级验算过滤（M4.5 行为延续，双保险）；A 原文不动 */
 	const cleanResident = (text: string): string => {
 		const r = stripAuditLines(text);
 		auditLinesDropped += r.dropped;
@@ -199,17 +274,15 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		skillPieces.set(topic, arr);
 	};
 
-	// system 通道：A/B/C 静态归拢 + skill 收集；postHistory 通道：只收 skill（静态近似），
-	// A/B/C 留给引擎每拍按真实求值内容重拆（支持 {{lastusermessage}}）。
+	// system 通道：常驻按原序收集 + skill 收集；postHistory 通道：只收 skill（静态近似），
+	// 常驻留给引擎每拍按真实求值内容重拆（支持 {{lastusermessage}}）。
 	for (const b of evaledSystemBlocks) {
 		if (!b.content.trim()) continue;
 		const rule = lookupBlockRule(splitTable, b.name);
-		const pieces = splitBlockContent(rule, b.name, b.content);
-		if (rule?.sovereigntyOverride) sovereigntyRelaxed = true;
+		const pieces = splitWithManifest(presetSkillManifest, b.id, rule, b.name ?? "", b.content);
 		for (const r of pieces.resident) {
-			if (r.section === "A") presetResidentA.push({ ...b, content: r.text });
-			else if (r.section === "B") presetResidentB.push(cleanResident(r.text));
-			else presetResidentC.push(cleanResident(r.text));
+			const text = r.section === "A" ? r.text : cleanResident(r.text);
+			if (text) presetResident.push({ name: b.name, section: r.section, text });
 		}
 		for (const s of pieces.skill) addSkillPiece(s.topic, b.name, s.text);
 		presetAssembly.push(reportItemFor(pieces, b.name, "system", b.content.length));
@@ -217,8 +290,7 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 	for (const b of probedPhBlocks) {
 		if (!b.content.trim()) continue;
 		const rule = lookupBlockRule(splitTable, b.name);
-		const pieces = splitBlockContent(rule, b.name, b.content);
-		if (rule?.sovereigntyOverride) sovereigntyRelaxed = true;
+		const pieces = splitWithManifest(presetSkillManifest, b.id, rule, b.name ?? "", b.content);
 		for (const s of pieces.skill) addSkillPiece(s.topic, b.name, s.text);
 		presetAssembly.push(reportItemFor(pieces, b.name, "postHistory", b.content.length));
 	}
@@ -230,9 +302,10 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		const text = v.stripLines ? raw.split("\n").filter((l) => !v.stripLines!.some((p) => p.test(l))).join("\n").trim() : raw;
 		if (!text) continue;
 		if (v.fate === "resident") {
-			if (v.section === "B") presetResidentB.push(cleanResident(text));
-			else presetResidentC.push(cleanResident(text));
-			presetAssembly.push({ name: `｛变量 ${v.name}｝`, channel: "postHistory", chars: text.length, nature: "C", fate: `常驻${v.section ?? "C"}` });
+			const section = v.section ?? "C";
+			const cleaned = cleanResident(text);
+			if (cleaned) presetResident.push({ name: `｛变量 ${v.name}｝`, section, text: cleaned });
+			presetAssembly.push({ name: `｛变量 ${v.name}｝`, channel: "postHistory", chars: text.length, nature: "C", fate: `常驻${section}` });
 		} else if (v.fate === "skill") {
 			addSkillPiece(v.topic ?? "general", `变量 ${v.name}`, text);
 			presetAssembly.push({ name: `｛变量 ${v.name}｝`, channel: "postHistory", chars: text.length, nature: "D", fate: `skill:${v.topic ?? "general"}` });
@@ -240,8 +313,7 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 	}
 	// 转述救出的规则句（手工校准，出处块进报告）
 	for (const s of splitTable?.supplements ?? []) {
-		if (s.section === "B") presetResidentB.push(s.text);
-		else presetResidentC.push(s.text);
+		presetResident.push({ name: `｛救出：${s.source}｝`, section: s.section, text: s.text });
 		presetAssembly.push({ name: `｛救出：${s.source}｝`, channel: "postHistory", chars: s.text.length, nature: "C", fate: `常驻${s.section}` });
 	}
 
@@ -264,11 +336,10 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		entries,
 		preset,
 		splitTable,
-		presetResidentA,
-		presetResidentB,
-		presetResidentC,
+		presetSkillManifest,
+		presetResident,
 		skillPacks,
-		sovereigntyRelaxed,
+		skillFiles: scanSkillFiles(cwd),
 		presetAssembly,
 		presetRuleTexts,
 		presetVarSnapshot: macroEnv.vars,

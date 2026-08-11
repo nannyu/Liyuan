@@ -7,8 +7,8 @@
  *   C 行为规则       → 常驻「行为边界」节（违反即坏拍）
  *   D 通用方法论     → skill（writing_guide 按需读，工具结果不落历史=用完即走）
  *   E 场景专题包     → skill 分主题（瑟瑟语料只在瑟瑟拍进上下文）
- *   F 机械纪律       → 代码（extractDraftRules→draft_check；原文不进上下文）
- *   G 验算指令       → 丢弃（draft_check 结构性取代——思考塌缩的直接抓手）
+ *   F 机械纪律       → 已死路由（8/10 验收退役：检测不复存在；条目冻结待重分拣）
+ *   G 验算指令       → 丢弃（思考塌缩的直接抓手；8/10 起 harness 侧验收同样不存在）
  *   H 脑内 harness   → 丢弃（预设自带的提示词版引擎：COT/格式栈/Prism/变量/包装，
  *                      agent 循环/工具/装配/压缩/渲染已原生实现同功能）
  *   I 噪声/死块      → 蒸发
@@ -50,7 +50,6 @@ export interface BlockSplitRule {
 	stripLines?: RegExp[];
 	segments?: SegmentRule[];
 	/** 该块声明了自定义用户代言边界（如话痨卡允许代写对白）→ 主权检查降档 */
-	sovereigntyOverride?: boolean;
 	note?: string;
 }
 
@@ -104,10 +103,8 @@ const TGBREAK: PresetSplitTable = {
 			nature: "C",
 			fate: "resident",
 			section: "C",
-			sovereigntyOverride: true,
-			note: "本卡允许代写 user 对白（话痨特质）——checkSovereignty 降档（保留内心/重大决定，放行对白）",
 		},
-		{ name: "✔️超级禁八股（最新版）", nature: "G", fate: "drop", note: "「生成前逐句扫描」＝draft_check 本职" },
+		{ name: "✔️超级禁八股（最新版）", nature: "G", fate: "drop", note: "「生成前逐句扫描」类验算指令（验收已整体退役）" },
 		{ name: "✔️文笔优化-比喻", nature: "F", fate: "rules-only" },
 		{ name: "✔️禁八股(测试版)", nature: "F", fate: "rules-only" },
 		{ name: "✔️角色防绝望", nature: "C", fate: "resident", section: "C" },

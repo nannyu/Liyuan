@@ -16,7 +16,6 @@ import { applyDraftOps, type DraftMsgLike } from "../draft.ts";
 import { cleanAssistantText } from "../postprocess.ts";
 import { formatState, defaultState } from "../state.ts";
 import { isBackstageText } from "../stance.ts";
-import type { PresetBlock } from "../preset.ts";
 import type { CharacterCard, LorebookEntry, MacroContext, RpConfig, WorldState } from "../types.ts";
 
 // ---------------- 分支 → 历史 ----------------
@@ -220,27 +219,15 @@ export function codexNamesFromBranch(branch: BranchEntryLike[]): string[] {
 
 // ---------------- system prompt（字节稳定） ----------------
 
-/** M-C 拆层后的预设常驻内容（materials/engine 产出；A 原文 + B/C 归拢文本） */
-export interface PresetResidentContent {
-	/** A 破限/身份契约：原文原序（不动不压不拆） */
-	aBlocks: PresetBlock[];
-	/** B 全程文风（写每句都用） */
-	styleTexts: string[];
-	/** C 行为规则（违反即坏拍的边界） */
-	boundaryTexts: string[];
-}
-
 export interface StageSystemOptions {
 	card: CharacterCard;
 	config: RpConfig;
 	constantLore: LorebookEntry[];
-	/** M-C：system 通道的预设常驻内容（拆层产物） */
-	presetResident?: PresetResidentContent;
-	/** writing_guide 可用主题（skill 包非空才有；空＝工具未挂，只字不提） */
-	skillTopics?: string[];
-	presetActive?: boolean;
-	statusBarFormats?: string[];
-	/** false = 不声明检索工具（M1 前过渡形态；M3 起默认开） */
+	/** M-R1：预设常驻内容（拆层产物），原文原序、零 harness 引导语（PLAN-RECTIFY §2.1-9） */
+	presetResident?: string[];
+	/** skill 素材位（M-R2）：常驻包正文进 system；拉取包进 L1 索引 */
+	skills?: Array<{ name: string; description: string; resident: boolean; body: string }>;
+	/** false = 不声明工具协议（M1 前过渡形态；M3 起默认开） */
 	tools?: boolean;
 	/**
 	 * MCP 外设工具（8/06 重接）：本会话已连接的 mcp__ 工具，空/省略＝只字不提。
@@ -249,38 +236,12 @@ export interface StageSystemOptions {
 	mcpTools?: Array<{ name: string; description: string }>;
 }
 
-/** 状态栏格式条目是否占位符型（自闭合 <Tag/>——界面由卡渲染，模型只留占位） */
-export function isPlaceholderStatusFormat(f: string): boolean {
-	return /\/>\s*$/.test(f.trim().replace(/^`|`$/g, ""));
-}
-
-/** 状态栏提示词：占位符型（自闭合）与面板型（成对、模型填内容）语义相反，分开写 */
-export function buildStatusBarPrompt(statusBarFormats: string[]): string {
-	const placeholders = statusBarFormats.filter(isPlaceholderStatusFormat);
-	const panels = statusBarFormats.filter((f) => !isPlaceholderStatusFormat(f));
-	const parts: string[] = [];
-	if (placeholders.length > 0) {
-		parts.push(
-			`本卡用占位符渲染状态栏界面：每拍在正文之后**原样输出** ${placeholders.join("；")}（自闭合标签，` +
-				`不要展开成成对写法、不要往里填内容——界面由卡自动渲染）`,
-		);
-	}
-	if (panels.length > 0) {
-		parts.push(
-			`用该标签包住整块写出，字段随本拍剧情更新（地点/时间/关系/数值等）——格式线索：${panels.join("；")}`,
-		);
-	}
-	return `${parts.join("；")}——这是卡作者设计的一部分，不依赖预设是否开启。`;
-}
-
 export function buildStageSystemPrompt({
 	card,
 	config,
 	constantLore,
 	presetResident,
-	skillTopics,
-	presetActive,
-	statusBarFormats,
+	skills,
 	tools,
 	mcpTools,
 }: StageSystemOptions): string {
@@ -311,46 +272,25 @@ export function buildStageSystemPrompt({
 		sections.push(`# 世界设定（常驻事实）\n${loreText}`);
 	}
 
-	sections.push(
-		`# 叙事与文风
-${
-	presetActive
-		? `- **扮演规范以用户预设为准**：人称视角、代言/抢话边界、文风、篇幅、节奏等一律按预设执行；预设未提及的按角色卡与上下文自然处理。`
-		: `- 以 ${card.name} 的视角行动和说话；动作、神态与场景描写用 *斜体*，对白用引号。
-- 【硬边界·用户主权】绝不替 ${config.userName} 说话、行动或代述内心想法——${config.userName} 的一切由用户本人书写。
-- 用具体的感官细节（光线、声音、气味、触感、温度）落实场景，不抽象概括情绪。
-- 每拍至少推进一小步（新信息、新动作、环境或情绪转折）；不原地兜圈，不复读前文。
-- ${card.name} 是有自我的人物：有欲望、恐惧、底线与秘密，会拒绝、犹豫、犯错、撒娇或撒谎，不做有求必应的客服。
-- 忌 AI 腔：不总结升华、不说教、不加免责声明；避免万能句式（如反复的"眼中闪过一丝……"）。`
-}
-- 【语言】无论角色卡、开场白或世界书原文是什么语言，你的叙事与对白一律使用${config.language}（人名、地名等专有名词可保留原文）。
-
-# 输出结构
-1. **正文**：纯剧情叙事与对白。不要把正文包进 \`<content>\` 之类的分析标签，不要写 HTML 注释式导演旁注。篇幅：有用户预设则跟预设；无预设时可见正文约 800–1500 字（短打约 400）。
-2. **状态栏**：${
-			statusBarFormats && statusBarFormats.length > 0
-				? `本卡定义了状态栏。${buildStatusBarPrompt(statusBarFormats)}`
-				: `本卡未检测到状态栏格式；**不要硬造**状态栏。若卡作者在说明里另有约定，按卡作者格式执行。`
-		}`,
-	);
-
+	// M-R1（PLAN-RECTIFY §2.1-5）：纯协议，零扮演词。扮演的每个字都有署名主人（P1）。
 	if (tools !== false) {
 		sections.push(
-			`# 怎么演这一拍
-把自己当成一位资深作家，发挥你强大的剧情构思能力，肆意展现你的文笔，为用户提供最好的扮演体验。
-
-第 1 轮：你需要读懂本拍处境，探索拿不准的信息，列出这一拍的路标，用 \`beat_plan\` 记下每一步发生什么。
-
-每一轮开始：你需要回看刚写下的段落，发挥自己职业作家的水平去构思这一段的剧情走向。
-
-写作过程中：你需要承接路标，倾尽所有的去构思这一段怎么写得精彩——镜头、动作、感官细节、神态情绪、节奏、点睛，把这一段写好再落笔，力求为用户提供最好的体验。
-
-写完后：你需要重新评估——剧情到岔路就用 \`ask\` 问用户，路标不成立就重拟 \`beat_plan\`，戏到停点就 \`draft_seal\` 收笔。
-
-每拍演完：你需要停在 ${config.userName} 可以接话、可以行动的位置。
-
-具体的每一步由每轮注入的轮次卡（【第 1 步·规划】【开工】【演段回看】等）指示，以注入为准。`,
+			`# 工作方式
+每拍第 1 轮用 \`beat_plan\` 列路标（没有戏的拍可 \`draft_write\` 一次交完）；正文用 \`draft_append\` 逐段写在稿纸上，写完 \`draft_seal\` 收笔。剧情走向要用户拍板时随时 \`ask\`。每轮注入的【进度】【判定】【记账】【谢幕】是当前状态，以它为准。`,
 		);
+	}
+
+	// skill 素材位（M-R2 §4.C）：常驻包正文随 system 送达（署名数据，零 harness 引导语）；
+	// 拉取包只列 L1 索引（name — description），读不读归模型。无包零痕迹（不凭空点名）。
+	if (skills && skills.length > 0) {
+		for (const sk of skills.filter((x) => x.resident)) {
+			sections.push(`# skill：${sk.name}（常驻）\n${sk.body}`);
+		}
+		const pullable = skills.filter((x) => !x.resident);
+		if (pullable.length > 0 && tools !== false) {
+			const index = pullable.map((x) => `- ${x.name} — ${x.description}`).join("\n");
+			sections.push(`# 可用 skill（\`skill_read\` 按名读取）\n${index}`);
+		}
 	}
 
 	// MCP 外设（8/06 重接）：用户在「扩展能力 → MCP」接入的外部服务器。
@@ -374,25 +314,16 @@ ${index}`,
 - 标注【开场】的消息是 ${card.name} 的既定开场白，剧情从那一刻继续。
 - 标注【前情提要】的消息是更早剧情的接力摘要，是既定事实。
 - 标注【世界状态】的消息是当前事实基准：剧情记忆与它冲突时，以状态为准并在叙事内自然圆回，绝不跳出剧情解释。
+- 标注【登场名录】的消息是登场过但已不在当前状态的条目索引（离场/失去/了结）${tools !== false ? "，细节可用 `memory_search` 查" : ""}；名录之外的名字才是新登场。
+- 标注【活跃面板】的消息是各面板的当前内容（用户可能手改过），其中事实为准。
 - 标注【相关设定】的消息是自动附上的世界书参考，按需取用。
+- 标注【设定集索引】的消息是设定条目的标题索引${tools !== false ? "，内容未出现在【相关设定】时可用 `lorebook_search` 取原文" : ""}。
 - 标注【剧情记忆】的消息是历史正文检索片段，按需取用，勿整段照抄。`,
 	);
 
-	// M-C 拆层常驻区：A 破限原文（原序）+ B 文风与写法 + C 行为边界。
-	// 引导语点明分工：内容照着写，机械纪律归验收器——不给「逐条自查」留借口。
-	if (presetResident) {
-		const { aBlocks, styleTexts, boundaryTexts } = presetResident;
-		if (aBlocks.length > 0) {
-			sections.push(`# 预设指令（用户自备，按原序）\n${aBlocks.map((b) => b.content).join("\n\n")}`);
-		}
-		if (styleTexts.length > 0) {
-			sections.push(
-				`# 文风与写法（用户预设）\n以下是本场演出的文风与写法要求，写作时照此执行：\n\n${styleTexts.join("\n\n")}`,
-			);
-		}
-		if (boundaryTexts.length > 0) {
-			sections.push(`# 行为边界（用户预设）\n写作时刻刻要守的边界：\n\n${boundaryTexts.join("\n\n")}`);
-		}
+	// 预设留驻区（M-R1）：原文、原序、原通道，零 harness 引导语（PLAN-RECTIFY §2.1-9）。
+	if (presetResident && presetResident.length > 0) {
+		sections.push(`# 预设指令（用户自备，按原序）\n${presetResident.join("\n\n")}`);
 	}
 
 	if (card.systemPrompt) {
@@ -433,65 +364,50 @@ export interface StageInjectionOptions {
 	activatedLore: LorebookEntry[];
 	card: CharacterCard;
 	config: RpConfig;
-	/** M-C：postHistory 通道的预设常驻内容（引擎每拍按真实求值内容拆层产出） */
-	presetTail?: PresetResidentContent;
-	presetActive?: boolean;
-	statusBarFormats?: string[];
+	/** M-R1：postHistory 通道的预设常驻内容（引擎每拍按真实求值内容拆层产出），原文原序 */
+	presetTail?: string[];
 	/** 上一拍台上叙事语言与配置不符（harness 检测） */
 	languageMismatch?: boolean;
 	/** 活跃面板全文快照（formatPanelSnapshot 产出）或一行速览 */
 	panelIndex?: string;
-	/**
-	 * M4.5 给排练断粮（慢因 A）：末端明示思考只用于读题与决定，不在思考里起草正文。
-	 * false = 关闭（速度基线对照用）。
-	 */
-	rehearsalGuard?: boolean;
-	/** 预设字数规则（extractDraftRules 提取）——构成性目标写作时必须在场，验算归代码 */
+	/** 预设字数规则（extractDraftRules 提取）——纯事实一行，无落笔指令（P2） */
 	wordRange?: { min: number; max: number };
 	/** 设定集索引行（formatLoreIndex 产出） */
 	loreIndex?: string;
 	/** 登场名录索引行（formatRosterIndex 产出） */
 	rosterIndex?: string;
-	/** false = 台上无检索工具（过渡形态）；影响索引块的措辞 */
-	tools?: boolean;
 }
 
-/** 每拍注入消息流末端的动态内容（以 user 角色送达） */
+/**
+ * 每拍注入消息流末端的动态内容（以 user 角色送达）。
+ *
+ * M-R1（PLAN-RECTIFY §2.2）：全部是事实块——数据带【标注】送达，语义在 system
+ * 「消息流约定」里一次说清，不逐拍复述。【导演备注】容器解散：卡末端指令独立成块，
+ * 主权兜底迁默认预设，「演完即停」由判定/谢幕的日程表达；【状态栏】【思考的用法】退场。
+ */
 export function buildStageInjection({
 	state,
 	activatedLore,
 	card,
 	config,
 	presetTail,
-	presetActive,
-	statusBarFormats,
 	languageMismatch,
 	panelIndex,
-	rehearsalGuard,
 	wordRange,
 	loreIndex,
 	rosterIndex,
-	tools,
 }: StageInjectionOptions): string {
 	const macro: MacroContext = { charName: card.name, userName: config.userName };
 	const blocks: string[] = [];
 
-	blocks.push(
-		`【世界状态】当前事实基准，正文不得与之矛盾——物品在谁手里、现在是第几天几点、人在哪里，以下面为准；剧情记忆与之冲突时在叙事内自然圆回：\n${formatState(state)}`,
-	);
+	blocks.push(`【世界状态】\n${formatState(state)}`);
 
 	if (rosterIndex) {
-		blocks.push(
-			`【登场名录】以下条目登场过但已不在当前状态（离场/失去/了结）：${rosterIndex}。剧情重新带回其中条目时忠于既定事实，${
-				tools === false
-					? "细节记不清就模糊带过，不得凭空改写"
-					: "细节记不清就**先用 `memory_search` 查**，查不到才模糊带过，不得凭空改写"
-			}；名录里没有的名字才是真正的新登场。`,
-		);
+		blocks.push(`【登场名录】${rosterIndex}`);
 	}
 
 	if (panelIndex) {
-		blocks.push(`【活跃面板·当前内容】以下为最新版（用户可能手改过），其中事实为准：\n${panelIndex}`);
+		blocks.push(`【活跃面板】\n${panelIndex}`);
 	}
 
 	if (activatedLore.length > 0) {
@@ -502,92 +418,29 @@ export function buildStageInjection({
 	}
 
 	if (loreIndex) {
-		blocks.push(
-			`【设定集索引】${loreIndex}。正文将涉及其中条目而其内容未出现在上方【相关设定】时，${
-				tools === false
-					? "谨慎带过、禁止臆造细节。"
-					: "**先用 `lorebook_search` 查出正文再写**——禁止凭想象编造已被写下的设定。"
-			}`,
-		);
+		blocks.push(`【设定集索引】${loreIndex}`);
 	}
 
-	// M-C：postHistory 通道常驻内容（A 原文按原序；B/C 归拢——depth 排序意义随拆层消解）
-	if (presetTail) {
-		if (presetTail.aBlocks.length > 0) {
-			blocks.push(`【预设末端指令】\n${presetTail.aBlocks.map((b) => b.content).join("\n\n")}`);
-		}
-		if (presetTail.styleTexts.length > 0) {
-			blocks.push(
-				`【文风与写法】写作时照此执行（从落笔起生效）：\n${presetTail.styleTexts.join("\n\n")}`,
-			);
-		}
-		if (presetTail.boundaryTexts.length > 0) {
-			blocks.push(`【行为边界】写作时刻刻要守（从落笔起生效）：\n${presetTail.boundaryTexts.join("\n\n")}`);
-		}
+	// 预设末端内容：原文直通，零归拢零引导语（M-R1）
+	if (presetTail && presetTail.length > 0) {
+		blocks.push(`【预设末端指令】\n${presetTail.join("\n\n")}`);
 	}
 
-	// 末端导演备注：上下文末尾权重最大，语言与主权纪律钉在这里。
-	// P9：一个提醒一件事——状态栏/思考用法各自成块，不挤在导演备注里互相稀释。
-	const notes: string[] = [];
+	// 卡末端指令：独立块（旧【导演备注】容器解散后的存留者——卡数据，原文直通）
 	if (card.postHistoryInstructions) {
-		notes.push(applyMacros(card.postHistoryInstructions, macro));
+		blocks.push(`【卡作者末端指令】\n${applyMacros(card.postHistoryInstructions, macro)}`);
 	}
-	if (presetActive) {
-		notes.push(`以${config.language}写叙事与对白（专有名词可保留原文）；人称视角与代言/抢话边界按用户预设执行。`);
-	} else {
-		notes.push(`以${config.language}写叙事与对白（专有名词可保留原文）；不替 ${config.userName} 行动、说话或代述想法。`);
-	}
-	// 篇幅：一次性任务信息，不是待通过的考试。
-	//
-	// 旧文案「由验收器核验，写作时朝这个量落笔即可」把篇幅变成了落笔前必须对准的
-	// 总量目标，而它又坐在末端注入（权重最高、紧贴用户话）的位置上——8/08 实弹里
-	// 模型逐字引用这一行后当场在思考里写完整篇初稿（13587 字思考），清单退化成
-	// 事后补登记。故：去掉验收暗示与「朝这个量落笔」的规划指令，只留一句背景信息，
-	// 并让它排在导演备注靠前的位置，把末尾权重留给语言/主权/状态栏这些真纪律。
-	if (wordRange) {
-		notes.push(`这一拍大约 ${wordRange.min}–${wordRange.max} 字（不含状态栏等格式区块），心里有数即可，不必核算。`);
-	} else if (presetActive) {
-		notes.push(`篇幅与格式优先遵循上方预设要求（若有）。`);
-	} else {
-		notes.push(`这一拍可见正文约 800–1500 字（短打约 400），心里有数即可。`);
-	}
-	notes.push(`演完本拍即停，停在 ${config.userName} 可接话处；不连演多拍，不写总结式收场白。`);
-	blocks.push(`【导演备注】\n${notes.join("\n")}`);
 
-	// 状态栏独立成块（P9：一个提醒一件事，不挤进导演备注）。
-	// 时序与谢幕链对齐（8/09 输出形式）：状态栏是本拍**最后**的产出——
-	// seal 回执、收笔评估卡、程序化谢幕说的都是同一件事，这里不能说成「正文之后」
-	// 就完事，否则模型在续写/ask 未完时提前输出（实弹：状态栏出完又问试墨）。
-	if (statusBarFormats && statusBarFormats.length > 0) {
-		const placeholders = statusBarFormats.filter(isPlaceholderStatusFormat);
-		const panels = statusBarFormats.filter((f) => !isPlaceholderStatusFormat(f));
-		if (placeholders.length > 0 && panels.length === 0) {
-			blocks.push(
-				`【状态栏】本卡扮演的一部分：本拍所有剧情（含续写与 ask）完成后，原样输出 ${placeholders.join(" 或 ")}（自闭合占位符，界面由卡渲染）。状态栏意味着本拍结束——它必须是最后的产出，漏写即未完成本拍。`,
-			);
-		} else {
-			blocks.push(
-				`【状态栏】本卡扮演的一部分：本拍所有剧情（含续写与 ask）完成后，输出状态栏，格式 ${statusBarFormats.join(" 或 ")}，字段随本拍剧情更新。状态栏意味着本拍结束——它必须是最后的产出，漏写即未完成本拍。`,
-			);
-		}
+	blocks.push(`【语言】以${config.language}写叙事与对白（专有名词可保留原文）。`);
+
+	// 字数一行：纯事实（无「朝这个量落笔」类指令）；无目标不出行
+	if (wordRange) {
+		blocks.push(`本拍约 ${wordRange.min}–${wordRange.max} 字`);
 	}
+
 	if (languageMismatch) {
 		blocks.push(
 			`【语言纠正】你上一拍使用了错误的语言。从本拍起，全部叙事与对白必须使用${config.language}（专有名词可保留原文）。这是硬性要求，立即纠正。`,
-		);
-	}
-	// M4.5 给排练断粮（慢因 A）：思考通道的职能被 harness 逐项接管后，明示它只剩读题与决定。
-	// 8/08 修正：旧文案连「构思」一起禁了，与「先 beat_plan 列路标」的协议自相矛盾——
-	// 网页版对照实验证明，分步骤+抽象配额是模型写命题作文的天然健康策略，该留；
-	// 病的是把构思写成成段正文。故此处只禁起草文字。
-	// 8/08 晚二次修正：本块是**每拍都在的静态注入**（规划轮也在场）——分轮职责
-	// （当前段怎么演/要不要 ask/路标是否重拟/戏是否到停点）只准出现在演段回看卡
-	// （roundCardFor，appends>0 才注入）。写在这里会泄漏给第 1 轮，把规划轮思考
-	// 撑到 3k 字（20:13 实弹 3034 字复现）。本块只留轮次无关的纯纪律。
-	if (rehearsalGuard) {
-		blocks.push(
-			`【思考的用法】思考全程用中文（与正文同语言）。思考与正文的分界：不要在思考里起草或逐句打磨任何一段正文——正文只在稿纸上写。` +
-				`也不要在思考里逐条复核禁词、句式、字数：这些由剧场在你收笔后程序化核验，需要改会把原文和违规清单一并交给你定点修订。`,
 		);
 	}
 

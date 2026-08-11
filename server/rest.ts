@@ -79,6 +79,7 @@ import {
 	updateStoreConfig,
 } from "../src/memory/index.ts";
 import { resolveConfigPath } from "../src/paths.ts";
+import { ensurePresetSkills, presetSkillDir, presetSkillSlug } from "../src/preset-skill.ts";
 import type { WorldlineView } from "../src/worldline.ts";
 import {
 	appendLorebookFileEntry,
@@ -1311,6 +1312,49 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			}
 
 			// ---- 技能库：面板只读展示 + /skill:name 显式触发（触发经会话通道，同输入框打命令） ----
+			// ---- 预设 skill 投影（PLAN-PRESET-SKILL）：manifest + enabled（真源=有效预设）----
+			case "GET /api/preset-skills": {
+				const eff = loadEffectivePreset(host.cwd).preset;
+				if (!eff) {
+					sendJson(res, 200, { preset: null, entries: [] });
+					return true;
+				}
+				const manifest = ensurePresetSkills(host.cwd, eff);
+				const enabledOf = new Map(eff.blocks.map((b) => [b.id, b.enabled]));
+				sendJson(res, 200, {
+					preset: manifest?.preset ?? eff.name ?? "",
+					dir: manifest ? `skills/预设-${presetSkillSlug(manifest.preset)}` : null,
+					entries: (manifest?.entries ?? []).map((e) => ({ ...e, enabled: enabledOf.get(e.blockId) === true })),
+				});
+				return true;
+			}
+			case "GET /api/preset-skills/content": {
+				const blockId = query.get("blockId") ?? "";
+				const eff = loadEffectivePreset(host.cwd).preset;
+				const block = eff?.blocks.find((b) => b.id === blockId);
+				if (!block) throw new Error("块不存在");
+				sendJson(res, 200, { content: block.content });
+				return true;
+			}
+			// 改判去向（manifest 数据侧；enabled 走 PUT /api/preset 的 blocks patch，单一真源）
+			case "POST /api/preset-skills/fate": {
+				const body = JSON.parse(await readBody(req)) as { blockId?: string; fate?: string };
+				const blockId = (body.blockId ?? "").trim();
+				const fate = (body.fate ?? "").trim();
+				if (!blockId || !fate) throw new Error("缺少 blockId/fate");
+				const eff = loadEffectivePreset(host.cwd).preset;
+				if (!eff) throw new Error("当前无预设");
+				const manifest = ensurePresetSkills(host.cwd, eff);
+				if (!manifest) throw new Error("无 manifest");
+				const entry = manifest.entries.find((e) => e.blockId === blockId);
+				if (!entry) throw new Error("块不在 manifest");
+				entry.fate = fate;
+				entry.edited = true;
+				const dir = presetSkillDir(host.cwd, manifest.preset);
+				writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, "\t"), "utf8");
+				sendJson(res, 200, { ok: true });
+				return true;
+			}
 			case "GET /api/skills": {
 				sendJson(res, 200, {
 					skills: listSkills(host.cwd).map((s) => ({

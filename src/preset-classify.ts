@@ -88,7 +88,7 @@ export function classifyBlock(content: string, name = ""): BlockClassification {
 	if (JAILBREAK_CHATTER.test(vis)) return { kind: "noise", reason: "破限/哄劝话术" };
 
 	// 纪律优先于结构与文风：禁词表/句式禁令/比喻原则（沿用已实弹验证的判据，R7）
-	if (isPoliceBlock(vis)) return { kind: "police", reason: "纪律细则（禁词/句式/比喻），改由验收层代码判" };
+	if (isPoliceBlock(vis)) return { kind: "police", reason: "纪律细则（禁词/句式/比喻），验收层已退役（8/10），去向待重分拣" };
 
 	// 结构与文风：谁的特征更强算谁；两者都无则兜底文风
 	const fmt = FORMAT_HINTS.test(vis);

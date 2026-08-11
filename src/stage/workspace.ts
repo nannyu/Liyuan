@@ -1,7 +1,7 @@
 /**
  * 回合工作区（PLAN-RP-AGENT-EXEC M-A §2.2）——正文成为工件的落点。
  *
- * 一拍一个工作区：模型经 draft_write 交稿、draft_check 验收、world_state_update 记账，
+ * 一拍一个工作区：模型经稿纸工具写正文、world_state_update 记账，
  * harness 只执行与验证，不替模型生成任何内容（控制反转的落地处）。
  *
  * 三条铁律：
@@ -15,10 +15,6 @@
 
 import {
 	applyDraftEdits,
-	checkDraft,
-	checkSovereignty,
-	extractDraftBody,
-	formatDraftReport,
 	searchDraft,
 	type DraftEditItem,
 	type DraftRules,
@@ -48,22 +44,16 @@ export interface TurnWorkspace {
 	plan: BeatStep[];
 	/** beat_plan 调用次数（KPI：构思是否真被推翻重拟过） */
 	planWrites: number;
-	/**
-	 * 已封笔（M-E）：正文写完了，可以按完整稿验收。
-	 *
-	 * 分段续写下「稿子存在」不等于「稿子写完」——首段 300 字不该被预设的 800 字
-	 * 下限判违规。故未封笔时字数一项降为提示，封笔后（或走 draft_write 全量交稿）
-	 * 才按完整稿口径验收。
-	 */
+	/** 已封笔（M-E）：正文写完了（8/10 起封笔只是状态切换，不触发任何检验） */
 	sealed: boolean;
-	/** 交稿次数（含宽进严出代收；验收统计「思考量 × draft_write 调用数」用） */
+	/** 交稿次数（含宽进严出代收） */
 	writes: number;
 	/** draft_append 追加段数（M-E KPI：分段续写是否真发生） */
 	appends: number;
 	/** draft_edit 成功套用的次数（M-B KPI：定点改稿是否真替代了全文重交） */
 	edits: number;
 	/**
-	 * 本拍查过几次世界（lorebook / memory / world_state_get；不含 writing_guide）。
+	 * 本拍查过几次世界（lorebook / memory / world_state_get；不含 skill_read）。
 	 *
 	 * 用作「这一拍有没有戏」的外部事实：查过世界＝中途确实遇到了需要停下来处理的
 	 * 事，那这一拍本该一段一段演。draft_write 的门禁据此判定（见 runWriteTool）。
@@ -71,23 +61,13 @@ export interface TurnWorkspace {
 	lookups: number;
 	/** world_state_update 已验证入队的 patch（定稿后按序统一套用） */
 	patches: Record<string, unknown>[];
-	/** 最近一次验收是否全绿（谢幕判定用；未验收过 = false） */
-	lastGreen: boolean;
 	/**
-	 * 最近一次验收的**未修违规**（未封笔口径：文本质量类；不含字数/缺模块）。
+	 * 本拍面板写入次数（panel_write / panel_close 调用计数，engine 维护）。
 	 *
-	 * 修复注入时机（8/08 晚定案）：末尾统一修复让用户看到的段不是真正文——
-	 * 违规必须在**每轮 append 之后**注入并强制修掉，下一段之前上一段已是最终形态。
-	 * draft_edit 改稿成功后会重跑验收，此清单随之更新；空 = 可以继续演。
+	 * 记账注入的跳过判据（PLAN-RECTIFY §2.3：本拍已有落账时可跳过）必须是结构信号，
+	 * 禁止文本识别——patches 与本计数就是那个结构信号。
 	 */
-	pendingViolations: string[];
-	/** 修复死循环安全阀（8/09）：同一批违规连续 edit 未消的次数 */
-	stuckFixes: number;
-	/** 上一次 edit 后的违规批次指纹（比对是否原地踏步） */
-	lastFixKey: string;
-	/** 已放行的违规批次（判为修不掉/验收误报）：runCheck 对同批次不再拦推进 */
-	bailedFixKey: string;
-	checks: number;
+	panelWrites: number;
 	/**
 	 * 本拍时间线（思考/工具/正文按**发生顺序**）。
 	 *
@@ -96,6 +76,12 @@ export interface TurnWorkspace {
 	 * 持久化，刷新与 resync 后仍在。
 	 */
 	timeline: TurnSegment[];
+	/**
+	 * 稿外直出文本（engine 每轮更新）：首轮直出＋稿落地前的 text 通道产出中，
+	 * 未被代收进稿的部分。seal 回执把它作为事实补认——不回喂原文、不给指令，
+	 * 处置（draft_edit 补进去 / 当旁白不理）归模型判断。
+	 */
+	strayText?: string;
 	/**
 	 * 本拍的媒体交付（show_image/audio/video/html、tts，8/06 重接）。
 	 *
@@ -124,12 +110,7 @@ export function createWorkspace(): TurnWorkspace {
 		edits: 0,
 		lookups: 0,
 		patches: [],
-		lastGreen: false,
-		pendingViolations: [],
-		stuckFixes: 0,
-		lastFixKey: "",
-		bailedFixKey: "",
-		checks: 0,
+		panelWrites: 0,
 		timeline: [],
 	};
 }
@@ -257,11 +238,6 @@ export interface WorkspaceDeps {
 	charName: string;
 	/** 本拍开演前的账本（= f(分支)）；patch 验证在其投影上干跑 */
 	baseState: WorldState;
-	/**
-	 * 预设声明了自定义代言边界（M-C D-C5，如话痨卡「可代写 user 对白」）：
-	 * 主权检查降档——放行「代写对白」，保留「代述内心」「代做决定」。
-	 */
-	relaxSovereignty?: boolean;
 }
 
 /** 已入队 patch 依序套在基准账本上的投影——后续 patch 的验证与定稿看到同一个世界 */
@@ -298,48 +274,17 @@ function pendingSteps(plan: BeatStep[]): number {
 	return plan.filter((s) => !s.done).length;
 }
 
-/** 验收现稿：报告文本 + 是否全绿（draft_write 收稿后与 draft_check 共用） */
-function runCheck(ws: TurnWorkspace, deps: WorkspaceDeps): { text: string; green: boolean } {
-	const report = checkDraft(ws.draft, deps.rules);
-	let sov = checkSovereignty(ws.draft, deps.userName, deps.charName);
-	// D-C5 降档：预设自带 user_boundary（允许代言对白）时不以「代写对白」打回
-	if (deps.relaxSovereignty) sov = sov.filter((s) => !s.startsWith("代写对白"));
-	ws.checks++;
-	// 未封笔（分段续写中）：字数与缺模块都不算违规——稿子还没写完，
-	// 拿完整稿口径判在写的段落，只会把模型逼回「一次交完」。降为提示。
-	const pending = ws.appends > 0 && !ws.sealed;
-	const violations = pending
-		? report.violations.filter((v) => !v.startsWith("正文 ") && !v.startsWith("缺模块") && !v.startsWith("缺状态栏"))
-		: report.violations;
-	const green = violations.length === 0 && sov.length === 0;
-	ws.lastGreen = green && !pending;
-	// 修复注入时机：未修违规随每轮 append 回执记下——引擎据此拦「带着脏段续演」。
-	// 安全阀（8/09）：已放行的违规批次（bailedFixKey，见 draft_edit 分支）不再拦——
-	// seal/append 重跑验收时同批违规原样在场，若再进 pending 就前功尽弃。
-	// 比对用稳定前缀口径（冒号前），与 draft_edit 分支的指纹同源。
-	const pendingList = [...violations, ...sov];
-	const pendingKey = pendingList.map((v) => v.split("：")[0]).join("|");
-	ws.pendingViolations = pendingKey === ws.bailedFixKey ? [] : pendingList;
-	// 未封笔：连同 notes 里的「正文 N 字，预设建议上/下限」一并滤掉——
-	// 那是最直接的误差信号（目标 − 实测），留着等于把游标卡尺塞回模型手里。
-	const notes = pending ? report.notes.filter((n) => !/^正文 \d+ 字/.test(n)) : report.notes;
-	const lines = [formatDraftReport({ ...report, violations, notes }, !pending)];
-	if (sov.length > 0) lines.push(sov.map((s) => `- [主权] ${s}`).join("\n"));
-	if (pending) {
-		// 未封笔阶段不回传字数读数（8/08 定案）：模型可以持有「这拍大约多长」的目标，
-		// 但系统一旦回传测量值，目标−测量就闭成误差环，思考会被「还差 19 字」这类
-		// 机械核算吃掉（8/08 实弹逐字复现）。改回传计划进度：是路标，不是可逼近的量。
-		const left = ws.plan.length > 0 ? pendingSteps(ws.plan) : -1;
-		lines.push(
-			`续写中（已 ${ws.appends} 段，未封笔）：` +
-				(left > 0
-					? `计划还剩 ${left} 条——勾掉刚演完的那条（beat_step_done），再往下演。`
-					: `接着 draft_append 往下写；写到头了用 draft_seal 封笔并按完整稿验收。`),
-		);
-	} else if (green) {
-		lines.push("验收通过：可定稿（停止调用工具即交付此稿），或继续打磨。");
-	}
-	return { text: lines.join("\n"), green };
+/**
+ * 封笔事实（8/10 验收整体退役后仅存的回执信息）：稿外直出补认一行。
+ * 禁词/比喻/句式的匹配统计连同 checkDraft 已全部删除——落笔之后 harness
+ * 不对稿件内容说任何话；质量投资全在落笔前（预设原文＋素材＋思考空间）。
+ */
+function sealFacts(ws: TurnWorkspace): string {
+	const stray = (ws.strayText ?? "").trim();
+	if (!stray) return "";
+	const chars = stray.replace(/\s+/g, "").length;
+	return `
+另：text 通道有约 ${chars} 字直出不在稿内（起头「${stray.slice(0, 15)}…」）。`;
 }
 
 /**
@@ -368,61 +313,45 @@ export function runWriteTool(
 		if (texts.length === 0) return { text: "steps 里没有有效条目。", ok: false };
 		if (texts.length > MAX_STEPS) {
 			return {
-				text: `计划最多 ${MAX_STEPS} 条（收到 ${texts.length} 条）——一拍是一小段戏，不是整章大纲。合并成几个关键动作。`,
+				text: `未记计划：最多 ${MAX_STEPS} 条（收到 ${texts.length} 条）。合并后重新提交。`,
 				ok: false,
 			};
 		}
-		// 粒度门禁：条目是路标不是正文。超长就是在清单里排练，拒收并说明——
-		// 让错的路走不通（承 draft_write 门禁同一手法）。
+		// 粒度门禁：条目是路标不是正文（通道形状约束，详见 beat_plan 工具描述）
 		const tooLong = texts.filter((t) => t.length > MAX_STEP_LEN);
 		if (tooLong.length > 0) {
 			return {
-				text:
-					`未记计划。有 ${tooLong.length} 条超过 ${MAX_STEP_LEN} 字——计划写的是**这一步要发生什么**` +
-					`（如「被值守弟子拦下」），不是这一步的正文。把它们压成一句话的路标；正文留给 draft_append。`,
+				text: `未记计划：有 ${tooLong.length} 条超过 ${MAX_STEP_LEN} 字（路标上限）。压成一句话后重新提交。`,
 				activity: "计划过细被拦下",
 				ok: false,
 			};
 		}
 		// 重拟保留已完成条目的勾选状态：文字一致者视为同一步，不因改写后半段而丢进度。
-		// 重拟是常态不是走岔：每演完一段，上文就变了，原计划剩余几步是否还成立
-		// 必须重新评估——计划只是起点假设，服务于当前上文，随时可改。
 		const doneTexts = new Set(ws.plan.filter((s) => s.done).map((s) => s.text));
 		ws.plan = texts.map((t) => ({ text: t, done: doneTexts.has(t) }));
 		ws.planWrites++;
-		const verb = ws.planWrites > 1 ? "计划已更新（重拟）" : "已记下计划";
+		const verb = ws.planWrites > 1 ? "计划已更新（重拟）" : "计划已接受";
 		return {
-			text:
-				`${verb}（${ws.plan.length} 条）：\n${formatPlan(ws.plan)}\n\n` +
-				`这是起点假设，不是剧本：每演完一段都要回看刚写的，重新评估剩余几步还成立吗——` +
-				`成立就勾掉继续，不成立就重拟 beat_plan，剧情到岔路就 ask 用户。` +
-				`接着按第一条未完成的演：draft_append 落这一段。`,
+			text: `计划已接受（${ws.plan.length} 条路标）。`,
 			activity: `${verb} · ${ws.plan.length} 条`,
 			ok: true,
 		};
 	}
 
 	if (name === "beat_step_done") {
-		if (ws.plan.length === 0) return { text: "本拍还没有计划——先用 beat_plan 列出这一拍要演的几步。", ok: false };
+		if (ws.plan.length === 0) return { text: "本拍还没有计划。", ok: false };
 		const idx = typeof args.step === "number" ? args.step : Number.NaN;
 		if (!Number.isInteger(idx) || idx < 1 || idx > ws.plan.length) {
 			return { text: `step 需为 1~${ws.plan.length} 的序号（当前计划 ${ws.plan.length} 条）。`, ok: false };
 		}
 		const target = ws.plan[idx - 1]!;
 		if (target.done) {
-			return { text: `第 ${idx} 条已经勾过了。当前计划：\n${formatPlan(ws.plan)}`, ok: false };
+			return { text: `第 ${idx} 条已经勾过了。`, ok: false };
 		}
 		target.done = true;
 		const left = pendingSteps(ws.plan);
-		// 回执只报结果（8/09 实弹：旧回执带四分支评估导向，与轮次卡逐句重复——模型
-		// 每勾一条就被逼着把「要不要 ask/续写/收笔」重新评估一遍，收笔前纠结了三轮。
-		// 评估指令归轮次卡（每轮都注入），回执不抢卡的活）。
 		return {
-			text:
-				`已勾掉第 ${idx} 条「${target.text}」，还剩 ${left} 条。当前计划：\n${formatPlan(ws.plan)}` +
-				(left > 0
-					? `\n刚写的一段已经盖过后面的路标的，连着勾掉即可，不必分轮。`
-					: `\n路标已全部演完。`),
+			text: `已勾掉第 ${idx} 条「${target.text}」，还剩 ${left} 条。`,
 			activity: `勾掉「${target.text}」· 剩 ${left} 条`,
 			ok: true,
 		};
@@ -433,14 +362,10 @@ export function runWriteTool(
 		if (!content.trim()) return { text: "content 为空——请提交完整正文。", ok: false };
 		// 门禁：draft_write 只留给「这一拍没有戏」。查过世界（设定/旧账/账本）
 		// 说明中途确实遇到了要停下来处理的事——那这拍本该一段一段演。
-		// 拒收而不是放行后再劝：让错的路走不通，把原因回喂（承 Codex plan.rs 的手法）。
-		// 已经在续写中（appends>0）则不拦：那是分段写到一半改用全量重交，另有 draft_edit 的劝导。
+		// 已经在续写中（appends>0）则不拦：那是分段写到一半改用全量重交。
 		if (!internal && ws.lookups > 0 && ws.appends === 0 && ws.draft === "") {
 			return {
-				text:
-					`未收稿。这一拍你查过 ${ws.lookups} 次世界——有要停下来处理的事，就是有戏的一拍，` +
-					`用 draft_append 一段一段演（一段约一个自然段，交完读一遍再决定下一段往哪走），演完 draft_seal 收笔。\n` +
-					`draft_write 只用于这一拍没有戏的时候：用户只是寒暄、确认、应一声，场面没有动。`,
+				text: `未收稿：本拍已查过 ${ws.lookups} 次世界（有戏的拍）。用 draft_append 一段一段演。`,
 				activity: "一次交完被拦下（这拍有戏）",
 				ok: false,
 			};
@@ -451,11 +376,9 @@ export function runWriteTool(
 		// 时间线：正文按交稿位置入档。重交是**替换**不是追加——
 		// 末段若已是本工作区写过的正文，改写它，避免多稿在屏上叠成几份。
 		replaceDraftSegment(ws, content);
-		// 收稿即验：省一轮往返（提速 KPI），模型仍可随时显式 draft_check 复验
-		const c = runCheck(ws, deps);
 		return {
-			text: `已收稿（第 ${ws.writes} 稿，${content.length} 字）。验收报告：\n${c.text}`,
-			activity: `交稿 ${content.length} 字${c.green ? " · 验收通过" : ""}`,
+			text: `已收稿（第 ${ws.writes} 稿）。${sealFacts(ws)}`,
+			activity: `交稿 ${content.length} 字`,
 			ok: true,
 		};
 	}
@@ -468,10 +391,9 @@ export function runWriteTool(
 		ws.appends++;
 		// 续写的正文入时间线：追加一段（不是替换——已写的部分是已经发生的事，不推翻）
 		ws.timeline.push({ kind: "text", text: seg, draft: true });
-		// 收段即验：报告当前状态（禁词/主权），但未封笔不判字数违规、也不回传字数读数
-		const c = runCheck(ws, deps);
+		// 回执只留事实（§2.4）：进度与判定由轮次注入承载
 		return {
-			text: `已续写（第 ${ws.appends} 段）。当前状态：\n${c.text}`,
+			text: `已续写（第 ${ws.appends} 段）。`,
 			activity: `续写第 ${ws.appends} 段`,
 			ok: true,
 		};
@@ -480,26 +402,11 @@ export function runWriteTool(
 	if (name === "draft_seal") {
 		if (!ws.draft.trim()) return { text: "工作区还没有稿件——先用 draft_write / draft_append 写正文。", ok: false };
 		ws.sealed = true;
-		const c = runCheck(ws, deps);
-		// 谢幕导向（8/09 输出形式）：状态栏 = 本拍结束的标志。只点名这一步——
-		// seal 发生即收笔评估已做完，回执不再复述「含 ask/续写」条件（8/09 实弹：
-		// 条件从句会让模型在谢幕轮把续写评估再翻一遍）。
-		const sb = deps.rules.statusBarTagGroup;
-		const tail =
-			c.green && sb.length > 0
-				? `\n剩最后一步：在正文之外直接输出状态栏（${sb.map((t) => `<${t}>`).join(" 或 ")}）等格式块——输出完本拍结束。`
-				: "";
 		return {
-			text: `已封笔。按完整稿验收：\n${c.text}${tail}`,
-			activity: c.green ? "封笔 · 验收通过" : "封笔 · 需修改",
+			text: `已封笔。${sealFacts(ws)}`,
+			activity: "封笔",
 			ok: true,
 		};
-	}
-
-	if (name === "draft_check") {
-		if (!ws.draft.trim()) return { text: "尚无稿件——先用 draft_write 交稿。", ok: false };
-		const c = runCheck(ws, deps);
-		return { text: c.text, activity: c.green ? "验收通过" : "验收未过", ok: true };
 	}
 
 	if (name === "draft_edit") {
@@ -520,43 +427,17 @@ export function runWriteTool(
 		// 续写形态下按段重切，保住「一段段长出来」的形态不塌成一整块。
 		if (ws.appends > 0) resyncDraftSegments(ws);
 		else replaceDraftSegment(ws, ws.draft);
-		// 改稿即验（与 draft_write 收稿即验同理）：省一轮往返
-		const c = runCheck(ws, deps);
-		// 修复死循环安全阀（8/09 实弹：验收误报「摄像机=比喻」，模型连修 9 轮烧完轮次
-		// 预算也修不掉）：同一批违规经 3 次定点修仍原样未消 → 判为修不掉（多半是验收
-		// 误报），放行推进——违规不再拦 append/done/seal，修复卡随 pending 清空自动退场。
-		let bail = "";
-		// 指纹取违规的稳定前缀（冒号前——「禁词「X」」「比喻词 N 次…」）：ctxQuote 引文
-		// 会随邻近文本微变，用全文做 key 永远对不上（计数变化 = 有进展，照常重置）
-		const fixKey = ws.pendingViolations.map((v) => v.split("：")[0]).join("|");
-		if (fixKey) {
-			if (fixKey === ws.lastFixKey) ws.stuckFixes++;
-			else {
-				ws.stuckFixes = 0;
-				ws.lastFixKey = fixKey;
-			}
-			if (ws.stuckFixes >= 2) {
-				ws.bailedFixKey = fixKey;
-				ws.pendingViolations = [];
-				bail = `\n（这批违规已连修 3 轮未消——可能是验收误报，已放行：不再拦推进，按现稿继续演出/收笔即可。）`;
-			}
-		}
-		// 未封笔时不带字数读数（同 draft_append 口径）；封笔后是验收场合，字数可见无害
-		const pending = ws.appends > 0 && !ws.sealed;
-		const body = extractDraftBody(ws.draft).replace(/\s+/g, "").length;
-		const head = pending ? `已改 ${edits.length} 处` : `已改 ${edits.length} 处（正文 ${body} 字）`;
 		return {
-			text: `${head}：\n${r.details.join("\n")}\n\n验收报告：\n${c.text}${bail}`,
-			activity: `定点改稿 ${edits.length} 处${c.green ? " · 验收通过" : bail ? " · 连修未消已放行" : ""}`,
+			text: `已改 ${edits.length} 处：\n${r.details.join("\n")}`,
+			activity: `定点改稿 ${edits.length} 处`,
 			ok: true,
 		};
 	}
 
 	if (name === "draft_read") {
 		if (!ws.draft.trim()) return { text: "工作区还没有稿件——先用 draft_write 提交初稿。", ok: false };
-		const body = extractDraftBody(ws.draft).replace(/\s+/g, "").length;
 		return {
-			text: `当前稿（第 ${ws.writes} 稿，已定点改 ${ws.edits} 次；验收口径正文 ${body} 字）：\n\n${ws.draft}`,
+			text: `当前稿（第 ${ws.writes} 稿，已定点改 ${ws.edits} 次）：\n\n${ws.draft}`,
 			activity: "读回现稿",
 			ok: true,
 		};

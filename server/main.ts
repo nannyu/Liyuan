@@ -2038,6 +2038,8 @@ const stage = new StageEngine({
 	getModel: () => session.model as never,
 	getAuth: async (m) => session.modelRegistry.getApiKeyAndHeaders(m as never),
 	getThinking: () => session.thinkingLevel,
+	// 输出合约 v1：装载期一次性模型声明供数（M-R4 首件；失败静默回退 v0 识别器）
+	declareContract: true,
 	// 场记落盘 → fs.watch 自动广播 state 帧（与扩展/REST 写路径同一条）
 	getStateFile: (sessionId) => join(stateDir, `${sessionId}.json`),
 	// memory_search 工具：剧情库 + 外部资料库合并取前 6（与扩展侧同一套语义）

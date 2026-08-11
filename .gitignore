@@ -81,3 +81,6 @@ scripts/_*
 
 # optional: keep web/dist for easier clone-and-run; uncomment to force rebuild
 # web/dist/
+
+# 预设→skill 装载期生成物（用户数据，不入库）
+skills/预设-*/

@@ -4,7 +4,7 @@
  * 对标 Claude Code 的 Read/Grep：动笔前查资料，不靠脑补。
  * 世界书族（lorebook_*）与向量库族（memory_*）已迁入统一工具层
  * （`src/tools/`，PLAN-RP-TOOLING M-D1~M-D3）；本模块只剩 world_state_get
- * 与 writing_guide，外加统一层的装配与派发入口。
+ * 与 skill_read，外加统一层的装配与派发入口。
  *
  * 封顶 MAX_LOOKUPS 次/拍：模型输出正文即视为动笔，工具循环自然结束。
  *
@@ -46,8 +46,8 @@ export interface StageToolDeps extends LoreDeps, MemoryDeps, CardDeps, Worldline
 	/** 世界状态账本（getState 必在；formatState 用于展示） */
 	getState: () => WorldState;
 	formatState: (s: WorldState) => string;
-	/** 写作方法论包（M-C 拆层 D/E 类）：topic → 文本；未注入＝无 writing_guide 工具 */
-	getSkill?: (topic: string) => string | undefined;
+	/** skill 内容解析（名称制）：skills/ 文件优先，拆层 D/E 进口包兜底；未注入＝无 skill_read 工具 */
+	getSkill?: (name: string) => string | undefined;
 }
 
 const STR = { type: "string" } as const;
@@ -69,20 +69,19 @@ export function stageTools(language: string, deps?: StageToolDeps): StageTool[] 
 }
 
 /**
- * 写作方法论工具（M-C，PLAN-RP-AGENT-EXEC §4 D-C2）：预设的 D/E 类内容按需读取。
- * 关键性质：工具结果**不落历史**（rebuildHistory 只留定稿正文）——方法论只活在当拍，
- * 谢幕即蒸发＝skill 的「按需加载、用完即走」。topics 为空时不要注册本工具（不凭空点名）。
+ * skill 读取工具（M-R2 §4.C，writing_guide 名称制改造）：按名读取 skill 内容。
+ * 来源两层：skills/ 文件（一等素材位）优先，拆层 D/E 进口包（topic 制遗产）兜底。
+ * 关键性质：工具结果**不落历史**（rebuildHistory 只留定稿正文）——内容只活在当拍，
+ * 谢幕即蒸发＝按需加载、用完即走。names 为空时不要注册本工具（不凭空点名）。
  */
-export function writingGuideTool(language: string, topics: string[]): StageTool {
+export function skillReadTool(language: string, names: string[]): StageTool {
 	return {
-		name: "writing_guide",
-		description:
-			`读取本预设附带的写作方法论（${language}）。可用主题：${topics.join(" / ")}。` +
-			`演到相关段落时读对应主题一次，照着写即可——这是**参考不是验收清单**，机械纪律由剧场在交稿时程序化把关。`,
+		name: "skill_read",
+		description: `按名读取一个 skill 的全文（${language}）。可读：${names.join(" / ")}。`,
 		parameters: {
 			type: "object",
-			properties: { topic: { type: "string", enum: topics, description: "要读取的方法论主题" } },
-			required: ["topic"],
+			properties: { name: { type: "string", enum: names, description: "要读取的 skill 名" } },
+			required: ["name"],
 		},
 	};
 }
@@ -162,7 +161,7 @@ export function writeTools(language: string): StageTool[] {
 		{
 			name: "draft_seal",
 			description:
-				"封笔：声明正文已全部写完，按完整稿验收（字数/禁词/模块/主权全量判定）。" +
+				"封笔：声明正文已全部写完，返回完整稿的验收事实（字数/文面/主权）。" +
 				"分段续写（draft_append）结束后必须调用本工具，否则本拍没有最终正文。",
 			parameters: { type: "object", properties: {}, required: [] },
 		},
@@ -212,13 +211,6 @@ export function writeTools(language: string): StageTool[] {
 			},
 		},
 		{
-			name: "draft_check",
-			description:
-				"对当前稿运行验收（代码判：字数/禁词/格式/主权红线），返回报告。" +
-				"draft_write 收稿与 draft_edit 改稿时都已自动验收；此工具用于额外复验。全绿即可定稿。",
-			parameters: { type: "object", properties: {}, required: [] },
-		},
-		{
 			name: "world_state_update",
 			description:
 				"提交世界状态账本补丁（合并语义）：time/location 字符串整体替换；characters 按角色名合并字段" +
@@ -243,13 +235,13 @@ export function writeTools(language: string): StageTool[] {
 				"剧情共创决策（P7 接回）：把该由用户拍板的选择交给用户。三种触发：\n" +
 				"① **主动触发**（随时，含第 1 轮）：用户输入本身在求方向/递笔（「接下来去找谁」「怎么办」" +
 				"「给个选项」「让我选」）——这不需要上文支撑，直接问。\n" +
-				"② **变量触发**（演出中、落笔前）：剧情里的未定变量**此刻**要实际影响剧情了——即将落笔的段落" +
-				"取决于它（如：新人物如何对待用户取决于还没定的性格；神秘身份到了揭幕的关口）。" +
+				"② **开局收集**（规划阶段、列路标之前）：用户这句输入引出的未定变量——取不同值这拍走向会" +
+				"明显分岔（如：买下用户的人性格温和还是残暴，决定整拍怎么演）、且卡与世界书查不到——" +
+				"先问用户定下来再规划。一次一问，多个变量只问最关键的。" +
 				"判断是**动态的**：变量不因「新」而重要——新人物的性格/身份不是全都要问，洞府里不是每件资源" +
-				"都值得问；只在**它对当前剧情的影响程度大**（定不下来会显著改变后续怎么演）的时刻才升格为" +
-				"该问的变量，其余自己顺着演，不事事上报。禁止代写用户身份的完整档案、禁止替用户定重大变量。\n" +
-				"③ **末尾触发**（收笔评估时）：自然下文涉及用户的行动或选择。\n" +
-				"给出 2~4 个具体、可落地、彼此不同的选项（${language}），用户作答后按答案继续演。\n" +
+				"都值得问；不分岔的自己顺着演，不事事上报。禁止代写用户身份的完整档案、禁止替用户定重大变量。\n" +
+				"③ **续写触发**（路标演完之后）：续写的自然下文涉及用户的行动或选择。\n" +
+				`给出 2~4 个具体、可落地、彼此不同的选项（${language}），用户作答后按答案继续演。\n` +
 				"用户点了停止 = 笔还给用户，本拍就此收束。\n" +
 				"**选择框分流**：用户预设自带选择框格式（如 <w2g>）时，岔路与回合末选项**按预设格式写进正文**，" +
 				"不要调本工具；只有预设没有选择框格式时才用 ask。",
@@ -290,15 +282,15 @@ export async function runStageTool(
 	const unified = await runUnifiedStageTool(deps, name, args, language);
 	if (unified) return { text: unified.text, ...(unified.activity ? { activity: unified.activity } : {}) };
 
-	if (name === "writing_guide") {
-		const topic = typeof args.topic === "string" ? args.topic.trim() : "";
-		const text = topic ? deps.getSkill?.(topic) : undefined;
+	if (name === "skill_read") {
+		const skillName = typeof args.name === "string" ? args.name.trim() : "";
+		const text = skillName ? deps.getSkill?.(skillName) : undefined;
 		if (!text) {
-			return { text: `没有主题「${topic}」的方法论。按已有理解直接动笔即可。` };
+			return { text: `没有名为「${skillName}」的 skill。按已有理解直接动笔即可。` };
 		}
 		return {
-			text: `【写作方法论·${topic}】以下为本预设的写作参考——照着写；机械纪律由验收器把关，无需自查。\n\n${text}`,
-			activity: `读方法论「${topic}」`,
+			text: `【skill·${skillName}】\n\n${text}`,
+			activity: `读 skill「${skillName}」`,
 		};
 	}
 
