@@ -288,7 +288,7 @@ const textOfAssistant = (m: AssistantMsgLike | null): string => {
 export const PLAN_CARD =
 	"【第 1 步·规划】本拍还没有计划。读题、探索（工具自取）；用户这句输入引出的未定变量——" +
 	"取不同值这拍走向会分岔、且设定里查不到的——先 `ask` 请用户定，再用 `beat_plan` 列路标。" +
-	"没有戏的拍可 `draft_write` 一次交完；用户本轮在求方向/递笔的，直接 `ask`。";
+	"短拍可 `draft_write` 一次交完；用户本轮在求方向/递笔的，直接 `ask`。";
 
 /** 记账注入：seal（含兜底封笔）之后第一件事；本拍已有落账（结构信号）时跳过 */
 export const LEDGER_INJECTION =
