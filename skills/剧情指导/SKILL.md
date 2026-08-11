@@ -1,7 +1,7 @@
 ---
 name: 剧情指导
-description: 每段正文落笔之前读——构思这一段怎么写。系统在每段交稿前强制要求先读本包。
-resident: false
+description: 每段正文落笔之前想一遍——构思这一段怎么写。
+resident: true
 ---
 
 写新一段前，先停下来想三件事，想清再写：
