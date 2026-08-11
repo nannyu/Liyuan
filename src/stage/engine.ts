@@ -303,10 +303,9 @@ const rangeNote = (wordRange?: { min: number; max: number }): string =>
 	wordRange ? `（目标 ${wordRange.min}–${wordRange.max}）` : "";
 
 /**
- * 进度行：每轮替换语义（替代开工卡/回看卡）。事实（路标进度与字数）+ 强制调用指令
- * （PLAN-M-R3 §1 第四改，8/11 用户定案：「明明确确写着调用剧情指导 skill 进行创作」）：
- * 全文注入实弹证伪（送达证实、模型不照做），改为指令模型 skill_read「剧情指导」——
- * 工具调用是模型可靠执行的动作，思考指令不是；受理门（agentLoop 内）为其做结构保证。
+ * 进度行：每轮替换语义（替代开工卡/回看卡）。事实（路标进度与字数）+ 包名投影。
+ * 中段零指令（8/11 用户定案「首轮通读、后面相信模型」）：写作指导已在首轮通读时
+ * 全部送达，落笔怎么写归模型。
  *
  * 字数测量**只活在写作中的轮次层**（8/10 复核定案）：续写的触发条件就是
  * 「正文低于目标→接着写」，死板但有效——这是续写机能的燃料，不是修复诱饵。
@@ -317,7 +316,6 @@ export function progressLine(
 	ws: TurnWorkspace,
 	wordRange?: { min: number; max: number },
 	packNames?: string[],
-	guidePull?: boolean,
 ): string {
 	const parts: string[] = [];
 	if (ws.plan.length > 0) {
@@ -325,9 +323,8 @@ export function progressLine(
 		if (i >= 0) parts.push(`路标 ${i + 1}/${ws.plan.length}「${ws.plan[i]!.text}」`);
 	}
 	parts.push(`已演 ${ws.appends} 段，正文约 ${draftBodyCharsOf(ws)} 字${rangeNote(wordRange)}`);
-	const guide = guidePull ? `每段落笔前先 \`skill_read\`「剧情指导」构思本段，再 \`draft_append\`。` : "";
 	const packs = packNames && packNames.length > 0 ? `可读场面包：${packNames.join(" / ")}。` : "";
-	return `【进度】${parts.join("；")}。${guide}${packs}`;
+	return `【进度】${parts.join("；")}。${packs}`;
 }
 
 /** 判定注入：路标全部演完且稿非空时一次性——续写/ask/收笔归模型判断（字数事实随行；
@@ -573,8 +570,7 @@ export class StageEngine {
 		// 回合工作区 = 正文工件的落点；字数目标在此提取一次（数据，供末端注入）。
 		// 读侧依赖先建：统一层按注入情况决定哪些世界书工具上清单（M-D2）。
 		// 可读名单：拉取档 skill 文件（常驻档已随 system 全文送达，不重复上单）+ 进口 topic 包。
-		// 剧情指导是标准拉取包（8/11 强制调用定案）：进度行指令 + append 受理门保证每段先读。
-		const guidePull = materials.skillFiles.some((f) => !f.resident && f.name === "剧情指导");
+		// 首轮通读门（8/11 用户定案）：名单非空即武装——开拍写作动作前须通读全部 skill。
 		const skillNames = [
 			...materials.skillFiles.filter((f) => !f.resident).map((f) => f.name),
 			...materials.skillPacks.keys(),
@@ -763,9 +759,8 @@ export class StageEngine {
 				language: config.language,
 				readDeps,
 				directText: text,
-				// 中段强制调用（8/11）：拉取包名投影 + 剧情指导受理门开关
+				// 拉取包名投影 + 首轮通读门（名单非空即武装）
 				skillNames,
-				guidePull,
 				...(curtain ? { curtain } : {}),
 			});
 			if (turn.final) final = turn.final;
@@ -975,9 +970,8 @@ export class StageEngine {
 		readDeps: StageToolDeps;
 		/** 首轮直出正文（调用方已流式外发） */
 		directText: string;
-		/** 中段强制调用（8/11）：skill_read 可读名单投影 + 剧情指导受理门（每段先读再交） */
+		/** skill_read 可读名单投影 + 首轮通读门（8/11 用户定案：名单非空即武装） */
 		skillNames: string[];
-		guidePull: boolean;
 		/** 谢幕注入文案（输出合约非空才有；无 = 不注入，拍自然收束） */
 		curtain?: string;
 	}): Promise<{ final: AssistantMsgLike | null; errored?: string; text: string; tailText?: string }> {
@@ -1009,9 +1003,8 @@ export class StageEngine {
 		let lastConsumed = 0; // 本轮开始时 text 长度——判定「本轮新产出文本」用
 		// 五注入日程状态（D9：进度行替换语义；判定/记账/谢幕一次性）
 		let verdictInjected = false;
-		// 剧情指导受理门（每段状态：accepted append 时重置）
-		let guideReadForSeg = false;
-		let guideNudgedForSeg = false;
+		// 首轮通读门（每拍只拦一次）
+		let skillGateNudged = false;
 		const skillReadDone = new Set<string>(); // 重复读瘦身：本拍已读过全文的 skill 名
 		let ledgerInjected = false;
 		let ledgerDone = false;
@@ -1124,17 +1117,22 @@ export class StageEngine {
 					// 记账轮的结构信号（§2.3）：写账工具被调＝记账仍在进行；面板写入计数进工作区
 					if (LEDGER_TOOLS.has(name)) ledgerCallThisRound = true;
 					if (name === "panel_write" || name === "panel_close") o.ws.panelWrites++;
-					// 剧情指导受理门（PLAN-M-R3 §1 第四改，8/11「那就强制调用」）：每段落笔前必须
-					// skill_read「剧情指导」——没读就交段，本段首次不受理（回执指路）；模型执意
-					// 重交则放行（每段只拦一次，防空转；安全阀思路同封笔催告）。
+					// 首轮通读门（8/11 用户定案「强制首轮读所有 skill，相信模型」）：开拍第一个
+					// 写作动作（beat_plan / draft_write / draft_append）之前必须把可读名单通读一遍。
+					// 没读全就开写，首次不受理（回执点名未读项，可同一轮全部读完）；模型执意
+					// 重来则放行（每拍只拦一次，防空转；安全阀思路同封笔催告）。中段零门禁。
 					const skillReadName =
 						name === "skill_read" ? (call.arguments as { name?: string } | undefined)?.name : undefined;
-					if (skillReadName === "剧情指导") guideReadForSeg = true;
-					if (name === "draft_append" && o.guidePull && !guideReadForSeg && !guideNudgedForSeg) {
-						guideNudgedForSeg = true;
+					const unreadSkills = o.skillNames.filter((n) => !skillReadDone.has(n));
+					if (
+						(name === "beat_plan" || name === "draft_write" || name === "draft_append") &&
+						unreadSkills.length > 0 &&
+						!skillGateNudged
+					) {
+						skillGateNudged = true;
 						r = {
-							text: "本段未受理：先 `skill_read`「剧情指导」构思这一段，再重交。",
-							activity: "交段暂缓——先读剧情指导",
+							text: `未受理：开拍前先 \`skill_read\` 通读全部 skill——${unreadSkills.map((n) => `「${n}」`).join("")}，可同一轮读完，读毕再开始。`,
+							activity: "开拍暂缓——先通读 skill",
 							ok: false,
 						};
 					} else if (skillReadName && skillReadDone.has(skillReadName)) {
@@ -1193,11 +1191,6 @@ export class StageEngine {
 					if (MEDIA_TOOLS.has(name) && mediaDetails && (r as MediaStageResult).isError !== true) {
 						o.ws.mediaDeliveries = o.ws.mediaDeliveries ?? [];
 						o.ws.mediaDeliveries.push({ toolName: name, details: mediaDetails, text: r.text });
-					}
-					// 剧情指导受理门：本段真交上了 → 下一段重新计门
-					if (name === "draft_append" && r.ok !== false) {
-						guideReadForSeg = false;
-						guideNudgedForSeg = false;
 					}
 					// 重复读瘦身：名单内 skill 首读成功后记名（未知名回落直写不记，避免把 miss 记成已读）
 					if (skillReadName && o.skillNames.includes(skillReadName) && r.ok !== false) {
@@ -1274,7 +1267,7 @@ export class StageEngine {
 						verdictInjected = true;
 						convo.push(nowMsg(verdictInjection(o.ws, o.wsDeps.userName, o.wsDeps.rules.wordRange)));
 					} else {
-						replaceProgressLine(convo, progressLine(o.ws, o.wsDeps.rules.wordRange, o.skillNames, o.guidePull));
+						replaceProgressLine(convo, progressLine(o.ws, o.wsDeps.rules.wordRange, o.skillNames));
 					}
 				}
 				// 工作区仍空（纯探索轮）：不注入——规划卡已随首轮末端注入送达
