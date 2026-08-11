@@ -788,14 +788,18 @@ function PresetSkillSection({ toast }: { toast: (level: "info" | "warning" | "er
 			await apiPost("/api/preset-skills/fate", { blockId: e.blockId, fate: f });
 			reload();
 		}, `去向改为 ${f}`);
-	// 有效性分组（8/11 用户定向）：常驻*→提示词；skill:*→skill；其余=失效（折叠，改去向可复活）
-	const destOf = (fate: string): "prompt" | "skill" | "dead" =>
-		fate.includes("常驻") ? "prompt" : fate.includes("skill:") ? "skill" : "dead";
+	// 两分法（8/11 用户定案）：存活看 fate（退场/仅规则提取=失效，折叠可复活）；
+	// 归组看身份（nature）：A 破限/C 边界→提示词；其余（文风/方法论/规则）→skill
+	const destOf = (e: PresetSkillEntry): "prompt" | "skill" | "dead" => {
+		if (!e.fate.includes("常驻") && !e.fate.includes("skill:")) return "dead";
+		const nat = e.nature.replace(/^兜底:/, "");
+		return nat === "A" || nat === "C" ? "prompt" : "skill";
+	};
 	const groups: Array<["prompt" | "skill", string]> = [
-		["prompt", "→ 提示词（常驻送模）"],
-		["skill", "→ skill（拉取包）"],
+		["prompt", "→ 系统提示词（破限/边界）"],
+		["skill", "→ skill（文风/方法论）"],
 	];
-	const dead = data.entries.filter((e) => destOf(e.fate) === "dead");
+	const dead = data.entries.filter((e) => destOf(e) === "dead");
 	return (
 		<section className="sp-section">
 			<h3 className="sp-h">
@@ -807,7 +811,7 @@ function PresetSkillSection({ toast }: { toast: (level: "info" | "warning" | "er
 				每块一个标准文件（含关闭块与失效块，无一蒸发）。开关与预设页签同一真源；去向可改，重生成时保留。
 			</div>
 			{groups.map(([key, label]) => {
-				const items = data.entries.filter((e) => destOf(e.fate) === key);
+				const items = data.entries.filter((e) => destOf(e) === key);
 				if (items.length === 0) return null;
 				return (
 					<div key={key}>

@@ -182,16 +182,19 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	draftRef.current = draft;
 	const activeFile = files.data?.active ?? null;
 
-	// 有效性视图（8/11 用户定向）：条目按去向分组，不再按通道——去向来自预设 skill manifest
+	// 有效性视图（8/11 用户定向）：条目按去向分组，不再按通道——判定来自预设 skill manifest
 	const fates = usePanelData(
-		() => apiGet<{ entries: Array<{ blockId: string; fate: string }> }>("/api/preset-skills"),
+		() => apiGet<{ entries: Array<{ blockId: string; nature: string; fate: string }> }>("/api/preset-skills"),
 		{ watchAgent: true, cacheKey: "/api/preset-skills" },
 	);
 	const contract = usePanelData(
 		() => apiGet<{ modules: Array<{ tag: string; source: string; form: string; hint?: string }>; declared: boolean; file: string }>("/api/output-contract"),
 		{ watchAgent: true, cacheKey: "/api/output-contract" },
 	);
-	const fateOf = useMemo(() => new Map((fates.data?.entries ?? []).map((e) => [e.blockId, e.fate])), [fates.data]);
+	const fateOf = useMemo(
+		() => new Map((fates.data?.entries ?? []).map((e) => [e.blockId, { nature: e.nature, fate: e.fate }])),
+		[fates.data],
+	);
 
 	const loadFromDisk = useCallback(async () => {
 		setLoadingDetail(true);
@@ -288,15 +291,16 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	/** 页签：参数 | 提示词（常驻送模） | skill（拉取包） | 状态栏（输出合约）——按有效去向，不按通道 */
 	const [tab, setTab] = useState<"samplers" | "prompt" | "skill" | "contract">("samplers");
 
-	// 去向判定：常驻*→提示词；skill:*→skill；其余（退场/仅规则提取）＝失效，不再送模、不再显示。
-	// 无判定信息（manifest 未生成/新块）不隐藏——宁多显不误删。
+	// 两分法（8/11 用户定案：去处只有静态系统提示词和 skill 两个）——
+	// 存活看 fate（退场/仅规则提取＝失效，不送模不显示）；归组看身份（nature）：
+	// A 破限/C 边界→提示词；其余（文风/方法论/规则等）→skill。送达方式（常驻/拉取）不改变归属。
 	const destOf = useCallback(
 		(blockId: string): "prompt" | "skill" | "dead" => {
-			const fate = fateOf.get(blockId);
-			if (!fate) return "prompt";
-			if (fate.includes("常驻")) return "prompt";
-			if (fate.includes("skill:")) return "skill";
-			return "dead";
+			const info = fateOf.get(blockId);
+			if (!info) return "skill"; // 无判定信息不隐藏（宁多显不误删）
+			if (!info.fate.includes("常驻") && !info.fate.includes("skill:")) return "dead";
+			const nat = info.nature.replace(/^兜底:/, "");
+			return nat === "A" || nat === "C" ? "prompt" : "skill";
 		},
 		[fateOf],
 	);
@@ -594,8 +598,8 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 											<div className="preset-chan-head">
 												<span className="lore-meta">
 													{tab === "prompt"
-														? `常驻送模（破限/文风/边界，原文直通）：${blocks.length} 块 · 启用 ${totalChars.toLocaleString()} 字`
-														: `拉取包（方法论，模型按需 skill_read）：${blocks.length} 块 · 启用 ${totalChars.toLocaleString()} 字`}
+														? `系统提示词（破限/边界，原文直通）：${blocks.length} 块 · 启用 ${totalChars.toLocaleString()} 字`
+														: `文风与方法论（含备选文风包，开哪个用哪个）：${blocks.length} 块 · 启用 ${totalChars.toLocaleString()} 字`}
 												</span>
 												{blocks.length > 0 && (
 													<button className="act" disabled={busy} onClick={() => toggleChannel(blocks, !allOn)}>
