@@ -147,7 +147,7 @@ test("system prompt：# 工作方式 = 纯协议（§2.1-5 逐字）；tools=fal
 	assert.ok(p.includes("# 工作方式"), "工作方式节在场");
 	assert.ok(
 		p.includes(
-			"每拍第 1 轮用 `beat_plan` 列路标（短拍可 `draft_write` 一次交完）；正文用 `draft_append` 逐段写在稿纸上，写完 `draft_seal` 收笔。剧情走向要用户拍板时随时 `ask`。每轮注入的【进度】【判定】【记账】【谢幕】是当前状态，以它为准。",
+			"每拍第 1 轮用 `beat_plan` 列路标（没有戏的拍可 `draft_write` 一次交完）；正文用 `draft_append` 逐段写在稿纸上，写完 `draft_seal` 收笔。剧情走向要用户拍板时随时 `ask`。每轮注入的【进度】【判定】【记账】【谢幕】是当前状态，以它为准。",
 		),
 		"文案即规格，逐字一致",
 	);

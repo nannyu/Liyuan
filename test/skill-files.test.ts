@@ -79,14 +79,14 @@ test("skill_read：按名读取，名单进工具描述；未知名回落直写"
 	assert.match(miss.text, /没有名为「群像」/);
 });
 
-test("默认库完整性（M-R3）：写作常驻、剧情指导与六拉取包就位，frontmatter 合格、无乱码", () => {
+test("默认库完整性（M-R3）：写作常驻、剧情指导轮次注入、六拉取包就位，frontmatter 合格、无乱码", () => {
 	const repo = join(import.meta.dirname, "..");
 	const files = scanSkillFiles(repo);
 	const byName = new Map(files.map((f) => [f.name, f]));
 	assert.equal(byName.get("写作")?.resident, true, "写作 常驻");
-	// 剧情指导：拉取档（8/11 用户定案：首轮通读门保证开拍全读，中段零机制）
+	// 剧情指导：非常驻但也不走拉取——引擎单列，每个写作轮次随进度行强制送达（8/11 定案）
 	const guide = byName.get("剧情指导");
-	assert.ok(guide && !guide.resident && guide.body.length > 0, "剧情指导 在场且为拉取档");
+	assert.ok(guide && !guide.resident && guide.body.length > 0, "剧情指导 在场且非常驻");
 	for (const n of ["情欲", "打斗", "对峙", "静场", "去八股", "ask判断"]) {
 		const f = byName.get(n);
 		assert.ok(f && !f.resident, `${n} 为拉取包`);
