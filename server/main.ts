@@ -43,7 +43,7 @@ import { loadAgentConfig, normalizeAgentConfig, syncAgentConfigToRuntime } from 
 import { streamSimple } from "@liyuan/ai/compat";
 import { loadCardFile } from "../src/card.ts";
 import { buildGreeting } from "../src/greeting.ts";
-import { StageEngine, type StageStreamFn } from "../src/stage/engine.ts";
+import { StageEngine, type AssistantMsgLike, type StageModelLike, type StageStreamFn } from "../src/stage/engine.ts";
 import { stateFromBranch, type BranchEntryLike } from "../src/stage/assemble.ts";
 import {
 	activePanels,
@@ -1453,6 +1453,39 @@ const restHost: RestHost = {
 		sessionId: session.sessionId,
 		card: cardPath || undefined,
 	}),
+	// 预设 AI 分拣等旁路声明：调当前会话模型做一次性判断（复用 streamSimple，同 StageEngine.#sideText）
+	runSideText: async (systemPrompt, userText, opts) => {
+		const model = session.model;
+		if (!model) return { error: "无可用模型" };
+		let auth: { apiKey?: string; headers?: Record<string, string> } = {};
+		try {
+			auth = (await session.modelRegistry.getApiKeyAndHeaders(model as never)) as typeof auth;
+		} catch (e) {
+			return { error: e instanceof Error ? e.message : String(e) };
+		}
+		const streamFn = streamSimple as unknown as StageStreamFn;
+		try {
+			const s = streamFn(
+				model as unknown as StageModelLike,
+				{ systemPrompt, messages: [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }] },
+				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: opts?.maxTokens ?? 4096, reasoning: opts?.reasoning ?? "off", signal: opts?.signal },
+			);
+			let final: AssistantMsgLike | null = null;
+			for await (const e of s) {
+				if (e.type === "done") final = e.message ?? null;
+				else if (e.type === "error") return { error: e.error?.errorMessage || `stopReason=${e.error?.stopReason ?? "?"}` };
+			}
+			if (!final) return { error: "流未产出最终消息" };
+			const text = final.content
+				.filter((c) => c.type === "text")
+				.map((c) => c.text ?? "")
+				.join("")
+				.trim();
+			return text || { error: "最终消息无文本" };
+		} catch (err) {
+			return { error: err instanceof Error ? err.message : String(err) };
+		}
+	},
 };
 
 // 启动时：liyuan.agent.json → models.json，重绑模型 + 应用思考档（配置 → 当前生效）

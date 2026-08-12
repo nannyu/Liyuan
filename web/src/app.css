@@ -7200,6 +7200,40 @@ label.drawer-btn {
 	background: var(--surface-dim);
 	border-radius: 12px;
 }
+.preset-sort-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin: 2px 0 12px;
+	padding: 7px 12px;
+	border-radius: 10px;
+	font-size: 12.5px;
+	background: var(--surface-dim);
+	color: var(--text-soft);
+}
+.preset-sort-bar .act {
+	flex: none;
+}
+.preset-v2-note {
+	display: block;
+	margin-top: 2px;
+	font-size: 11px;
+	line-height: 1.4;
+	color: var(--text-faint, var(--text-soft));
+	opacity: 0.85;
+}
+.preset-sort-bar.sort-running {
+	background: color-mix(in srgb, var(--accent, #6b8afd) 14%, transparent);
+	color: var(--text);
+}
+.preset-sort-bar.sort-done {
+	background: color-mix(in srgb, #37b26b 14%, transparent);
+}
+.preset-sort-bar.sort-failed {
+	background: color-mix(in srgb, #d9534f 16%, transparent);
+	color: var(--text);
+}
 .preset-tab {
 	flex: 1;
 	display: inline-flex;
@@ -7247,3 +7281,17 @@ label.drawer-btn {
 .sp-subhead { font-size: 12px; opacity: 0.7; margin: 10px 0 4px; }
 .preset-skill.off .lore-title { opacity: 0.5; }
 .preset-skill .lore-content { white-space: pre-wrap; font-size: 12px; max-height: 260px; overflow: auto; }
+
+/* skill 库编辑器（8/12：预设不再产 skill，此区管理真 skills/<目录>/SKILL.md） */
+.skill-lib-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid rgba(128,128,128,.15); }
+.skill-lib-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.skill-lib-main .lore-meta { white-space: normal; word-break: break-word; }
+.skill-badge { margin-left: 6px; font-size: 11px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--border, #444); color: var(--text-faint); vertical-align: middle; }
+.skill-badge.resident { color: var(--accent); border-color: var(--accent); opacity: 0.85; }
+.skill-edit-form { padding: 8px 0 12px; border-bottom: 1px solid rgba(128,128,128,.2); margin-bottom: 8px; }
+.skill-resident-row { align-items: center; gap: 8px; margin-top: 8px; }
+.skill-edit-acts { margin-top: 10px; }
+
+/* 预设块删除按钮（8/12 用户点名：提示词/状态栏都要能删） */
+.preset-del-btn { color: var(--danger, #c0392b); border-color: var(--danger, #c0392b); opacity: 0.85; }
+.preset-del-btn:hover { opacity: 1; }

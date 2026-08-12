@@ -19,10 +19,32 @@ import {
 	type PresetsResponse,
 } from "../api.ts";
 import { ConfirmButton, PanelStatus, SliderField, Toggle, useAction, usePanelData } from "./kit.tsx";
+import { SkillLibrary } from "./SkillLibrary.tsx";
 
 const CHANNEL_LABEL: Record<string, string> = {
 	system: "系统区",
 	postHistory: "末端注入",
+};
+
+/** v2 分拣投影（模型通读产物 manifest.v2.json，经 /api/preset-skills 下发；仅展示层，引擎送达仍走 v1） */
+type SortingV2 = {
+	preset?: string;
+	familySemantics?: Record<string, string>;
+	groups?: Array<{ name: string; rule: string; members: number[]; note?: string }>;
+	entries?: Array<{ idx: number; blockId: string; family: string; group?: string; note?: string }>;
+};
+
+/** v2 家族 → 页签归属（8/12 用户定案：skill 与提示词合并——凡送模的散文都是提示词，skill 页签让位给真 skill 库） */
+const V2_FAMILY_DEST: Record<string, "prompt" | "contract" | "param" | "del" | "archive"> = {
+	破限: "prompt",
+	配置: "prompt",
+	文风: "prompt",
+	NSFW: "prompt",
+	方法论: "prompt",
+	输出合约: "contract",
+	参数: "param",
+	删: "del",
+	留档: "archive",
 };
 
 const SAMPLER_META: Array<{ key: string; min: number; max: number; step: number; hint: string }> = [
@@ -71,11 +93,15 @@ function toDraft(p: NonNullable<FullPresetResponse["preset"]>): DraftPreset {
 function PresetBlockEditor({
 	block,
 	busy,
+	note,
 	onChange,
+	onDelete,
 }: {
 	block: DraftBlock;
 	busy: boolean;
+	note?: string;
 	onChange: (patch: Partial<DraftBlock>) => void;
+	onDelete?: () => void;
 }) {
 	const [open, setOpen] = useState(false);
 
@@ -96,6 +122,7 @@ function PresetBlockEditor({
 							{(block.content?.length ?? block.chars).toLocaleString()} 字 ·{" "}
 							{CHANNEL_LABEL[block.channel] ?? block.channel}
 						</span>
+						{note && <span className="lore-meta preset-v2-note">{note}</span>}
 					</div>
 				</button>
 				<div className="preset-block-acts">
@@ -107,6 +134,11 @@ function PresetBlockEditor({
 					>
 						修改
 					</button>
+					{onDelete && (
+						<ConfirmButton className="act preset-del-btn" disabled={busy} confirmText="确认删除" onConfirm={onDelete}>
+							删除
+						</ConfirmButton>
+					)}
 					<Toggle
 						checked={block.enabled}
 						disabled={busy}
@@ -184,7 +216,11 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 
 	// 有效性视图（8/11 用户定向）：条目按去向分组，不再按通道——判定来自预设 skill manifest
 	const fates = usePanelData(
-		() => apiGet<{ entries: Array<{ blockId: string; nature: string; fate: string }> }>("/api/preset-skills"),
+		() =>
+			apiGet<{
+				entries: Array<{ blockId: string; nature: string; fate: string }>;
+				sorting?: SortingV2 | null;
+			}>("/api/preset-skills"),
 		{ watchAgent: true, cacheKey: "/api/preset-skills" },
 	);
 	const contract = usePanelData(
@@ -194,6 +230,12 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	const fateOf = useMemo(
 		() => new Map((fates.data?.entries ?? []).map((e) => [e.blockId, { nature: e.nature, fate: e.fate }])),
 		[fates.data],
+	);
+	// v2 分拣（有则按家族渲染，无则回落两分法）；preset 名对不上=数据陈旧，同样回落
+	const sorting = fates.data?.sorting ?? null;
+	const v2Of = useMemo(
+		() => new Map((sorting?.entries ?? []).map((e) => [e.blockId, e])),
+		[sorting],
 	);
 
 	const loadFromDisk = useCallback(async () => {
@@ -278,6 +320,11 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		}));
 	};
 
+	/** 删块：从预设移除（立即进运行时，dirty，保存后写盘）。8/12 用户点名：提示词/状态栏都要能删。 */
+	const removeBlock = (id: string) => {
+		patchDraft((d) => ({ ...d, blocks: d.blocks.filter((b) => b.id !== id) }));
+	};
+
 	const orderedSamplers = useMemo(() => {
 		if (!draft) return { known: [] as ((typeof SAMPLER_META)[number] & { value: number })[], unknown: [] as { key: string; value: number }[] };
 		const samplers = draft.samplers;
@@ -288,27 +335,87 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		return { known, unknown };
 	}, [draft]);
 
-	/** 页签：参数 | 提示词（常驻送模） | skill（拉取包） | 状态栏（输出合约）——按有效去向，不按通道 */
-	const [tab, setTab] = useState<"samplers" | "prompt" | "skill" | "contract">("samplers");
+	/** 页签：参数 | 提示词（送模散文全量） | skill（真 skill 库编辑器） | 状态栏（输出合约） | 删（v2 判删审阅） */
+	const [tab, setTab] = useState<"samplers" | "prompt" | "skill" | "contract" | "del">("samplers");
 
-	// 两分法（8/11 用户定案：去处只有静态系统提示词和 skill 两个）——
-	// 存活看 fate（退场/仅规则提取＝失效，不送模不显示）；归组看身份（nature）：
-	// A 破限/C 边界→提示词；其余（文风/方法论/规则等）→skill。送达方式（常驻/拉取）不改变归属。
+	// 归并法（8/12 用户定案：skill 与提示词合并）——
+	// 存活看 fate（退场/仅规则提取＝失效，不送模不显示）；活着的一律归系统提示词。
 	const destOf = useCallback(
-		(blockId: string): "prompt" | "skill" | "dead" => {
+		(blockId: string): "prompt" | "dead" => {
 			const info = fateOf.get(blockId);
-			if (!info) return "skill"; // 无判定信息不隐藏（宁多显不误删）
+			if (!info) return "prompt"; // 无判定信息不隐藏（宁多显不误删）
 			if (!info.fate.includes("常驻") && !info.fate.includes("skill:")) return "dead";
-			const nat = info.nature.replace(/^兜底:/, "");
-			return nat === "A" || nat === "C" ? "prompt" : "skill";
+			return "prompt";
 		},
 		[fateOf],
 	);
 	const byDest = useMemo(() => {
-		const map = { prompt: [] as DraftBlock[], skill: [] as DraftBlock[], dead: [] as DraftBlock[] };
+		const map = { prompt: [] as DraftBlock[], dead: [] as DraftBlock[] };
 		for (const b of draft?.blocks ?? []) map[destOf(b.id)].push(b);
 		return map;
 	}, [draft, destOf]);
+
+	// v2 家族视图：模型通读分拣在场且对得上当前预设时，页签内容按家族+互斥组渲染
+	const hasV2 = !!draft && !!sorting && v2Of.size > 0 && (sorting.preset ?? draft.name) === draft.name;
+	const v2Dest = useMemo(() => {
+		const map = {
+			prompt: [] as DraftBlock[],
+			contract: [] as DraftBlock[],
+			param: [] as DraftBlock[],
+			del: [] as DraftBlock[],
+			archive: [] as DraftBlock[],
+		};
+		if (!hasV2) return map;
+		for (const b of draft?.blocks ?? []) {
+			const fam = v2Of.get(b.id)?.family ?? "";
+			map[V2_FAMILY_DEST[fam] ?? "prompt"].push(b);
+		}
+		return map;
+	}, [draft, v2Of, hasV2]);
+	// 无 v2 时不该停在「删」页签
+	useEffect(() => {
+		if (tab === "del" && !hasV2) setTab("samplers");
+	}, [tab, hasV2]);
+
+	// AI 分拣进度（PLAN-PRESET-SORT）：导入/打开时拉一次，running 时轮询到收敛
+	type SortStatus = { status: "idle" | "running" | "done" | "failed" | "manual"; done?: number; total?: number; phase?: string; error?: string };
+	const [sortStatus, setSortStatus] = useState<SortStatus | null>(null);
+	const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+	const fetchSort = useCallback(async () => {
+		try {
+			const s = await apiGet<SortStatus>("/api/preset-sort/status");
+			setSortStatus(s);
+			if (s.status !== "running") {
+				if (pollRef.current) {
+					clearInterval(pollRef.current);
+					pollRef.current = null;
+				}
+				if (s.status === "done") fates.reload();
+			}
+		} catch {
+			// 端点不存在（server 未重启）等：静默，UI 回落无分拣条
+		}
+	}, [fates]);
+	useEffect(() => {
+		void fetchSort();
+	}, [activeFile, fetchSort]);
+	useEffect(() => {
+		if (sortStatus?.status === "running" && !pollRef.current) {
+			pollRef.current = setInterval(() => void fetchSort(), 1500);
+		}
+		return () => {
+			if (pollRef.current) {
+				clearInterval(pollRef.current);
+				pollRef.current = null;
+			}
+		};
+	}, [sortStatus?.status, fetchSort]);
+	const rerunSort = () =>
+		run(async () => {
+			await apiPost("/api/preset-sort/run", { force: true });
+			setSortStatus({ status: "running", done: 0, total: 0, phase: "启动" });
+			await fetchSort();
+		}, "已开始 AI 分拣");
 
 	const selectPreset = (file: string | null) =>
 		run(async () => {
@@ -505,6 +612,48 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 
 					{draft && (
 						<>
+							{sortStatus && sortStatus.status !== "idle" && (
+								<div className={`preset-sort-bar sort-${sortStatus.status}`}>
+									{sortStatus.status === "running" && (
+										<span>
+											⏳ AI 分拣中…{sortStatus.phase ? ` ${sortStatus.phase}` : ""}
+											{sortStatus.total ? `（${sortStatus.done}/${sortStatus.total}）` : ""}
+										</span>
+									)}
+									{sortStatus.status === "done" && (
+										<>
+											<span>✓ AI 已分拣（模型逐块归类）</span>
+											<button className="act" disabled={busy} onClick={rerunSort} title="丢弃当前分类，让 AI 重新逐块判定">
+												重新分拣
+											</button>
+										</>
+									)}
+									{sortStatus.status === "manual" && (
+										<>
+											<span>✎ 手工基准分拣（人工通读校准）</span>
+											<button className="act" disabled={busy} onClick={rerunSort} title="用 AI 覆盖手工基准（会丢失人工校准）">
+												改用 AI 分拣
+											</button>
+										</>
+									)}
+									{sortStatus.status === "failed" && (
+										<>
+											<span title={sortStatus.error}>⚠ AI 分拣失败，已回落两分法</span>
+											<button className="act" disabled={busy} onClick={rerunSort}>
+												重试
+											</button>
+										</>
+									)}
+								</div>
+							)}
+							{sortStatus?.status === "idle" && (
+								<div className="preset-sort-bar sort-idle">
+									<span>{sortStatus.phase || "未分拣"}</span>
+									<button className="act" disabled={busy} onClick={rerunSort} title="让 AI 逐块把预设块归类到家族">
+										AI 分拣
+									</button>
+								</div>
+							)}
 							<div className="preset-tabs" role="tablist">
 								<button
 									type="button"
@@ -515,23 +664,31 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 								>
 									参数
 								</button>
-								{([["prompt", "提示词"], ["skill", "skill"]] as const).map(([key, label]) => {
-									const blocks = byDest[key];
+								{(() => {
+									const blocks = hasV2 ? v2Dest.prompt : byDest.prompt;
 									const on = blocks.filter((b) => b.enabled).length;
 									return (
 										<button
-											key={key}
 											type="button"
 											role="tab"
-											aria-selected={tab === key}
-											className={`preset-tab ${tab === key ? "active" : ""}`}
-											onClick={() => setTab(key)}
+											aria-selected={tab === "prompt"}
+											className={`preset-tab ${tab === "prompt" ? "active" : ""}`}
+											onClick={() => setTab("prompt")}
 										>
-											{label}
+											提示词
 											<span className="preset-tab-count">{on}/{blocks.length}</span>
 										</button>
 									);
-								})}
+								})()}
+								<button
+									type="button"
+									role="tab"
+									aria-selected={tab === "skill"}
+									className={`preset-tab ${tab === "skill" ? "active" : ""}`}
+									onClick={() => setTab("skill")}
+								>
+									skill
+								</button>
 								<button
 									type="button"
 									role="tab"
@@ -540,8 +697,24 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 									onClick={() => setTab("contract")}
 								>
 									状态栏
-									<span className="preset-tab-count">{(contract.data?.modules ?? []).length}</span>
+									<span className="preset-tab-count">
+										{(contract.data?.modules ?? []).length + (hasV2 ? v2Dest.contract.length : 0)}
+									</span>
 								</button>
+								{hasV2 && (
+									<button
+										type="button"
+										role="tab"
+										aria-selected={tab === "del"}
+										className={`preset-tab ${tab === "del" ? "active" : ""}`}
+										onClick={() => setTab("del")}
+									>
+										删
+										<span className="preset-tab-count">
+											{v2Dest.del.filter((b) => b.enabled).length}/{v2Dest.del.length + v2Dest.archive.length}
+										</span>
+									</button>
+								)}
 							</div>
 
 							{tab === "samplers" && (
@@ -584,12 +757,31 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 										/>
 									</div>
 								))}
+								{hasV2 && v2Dest.param.length > 0 && (
+									<>
+										<div className="preset-chan-head" style={{ marginTop: 10 }}>
+											<span className="lore-meta">字数（二选一，规则提取进引擎目标）</span>
+										</div>
+										{v2Dest.param.map((b) => (
+											<PresetBlockEditor
+												key={b.id}
+												block={b}
+												busy={busy}
+												note={v2Of.get(b.id)?.note}
+												onChange={(patch) => patchBlock(b.id, patch)}
+												onDelete={() => removeBlock(b.id)}
+											/>
+										))}
+									</>
+								)}
 							</section>
 							)}
 
-							{(tab === "prompt" || tab === "skill") &&
+							{tab === "skill" && <SkillLibrary toast={toast} />}
+
+							{tab === "prompt" && !hasV2 &&
 								(() => {
-									const blocks = byDest[tab];
+									const blocks = byDest.prompt;
 									const totalChars = blocks.reduce((n, b) => n + (b.enabled ? b.content.length : 0), 0);
 									const allOn = blocks.length > 0 && blocks.every((b) => b.enabled);
 									const deadChars = byDest.dead.reduce((n, b) => n + b.content.length, 0);
@@ -597,9 +789,7 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 										<section className="sp-section">
 											<div className="preset-chan-head">
 												<span className="lore-meta">
-													{tab === "prompt"
-														? `系统提示词（破限/边界，原文直通）：${blocks.length} 块 · 启用 ${totalChars.toLocaleString()} 字`
-														: `文风与方法论（含备选文风包，开哪个用哪个）：${blocks.length} 块 · 启用 ${totalChars.toLocaleString()} 字`}
+													{`系统提示词（原文直通，含破限/边界/文风/方法论）：${blocks.length} 块 · 启用 ${totalChars.toLocaleString()} 字`}
 												</span>
 												{blocks.length > 0 && (
 													<button className="act" disabled={busy} onClick={() => toggleChannel(blocks, !allOn)}>
@@ -614,9 +804,10 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 													block={b}
 													busy={busy}
 													onChange={(patch) => patchBlock(b.id, patch)}
+													onDelete={() => removeBlock(b.id)}
 												/>
 											))}
-											{tab === "prompt" && byDest.dead.length > 0 && (
+											{byDest.dead.length > 0 && (
 												<div className="field-hint">
 													另有 {byDest.dead.length} 块 / {deadChars.toLocaleString()} 字已失效不再送模（旧环境的
 													COT/验算/包装类程序内容，机制已覆盖）。文件仍在 skills/预设-*/blocks/，改 manifest 去向可复活。
@@ -625,6 +816,116 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 										</section>
 									);
 								})()}
+
+							{tab === "prompt" && hasV2 &&
+								(() => {
+									// v2 家族渲染（8/12 合并定案：送模散文全在提示词页）；家族内按互斥组分节
+									const fams = ["破限", "配置", "文风", "NSFW", "方法论"];
+									const bucket = v2Dest.prompt;
+									return (
+										<section className="sp-section">
+											{fams.map((fam) => {
+												const blocks = bucket.filter((b) => v2Of.get(b.id)?.family === fam);
+												if (blocks.length === 0) return null;
+												const nOn = blocks.filter((b) => b.enabled).length;
+												const onChars = blocks.reduce((n, b) => n + (b.enabled ? b.content.length : 0), 0);
+												const grouped = new Map<string, DraftBlock[]>();
+												const loose: DraftBlock[] = [];
+												for (const b of blocks) {
+													const g = v2Of.get(b.id)?.group;
+													if (g) {
+														if (!grouped.has(g)) grouped.set(g, []);
+														grouped.get(g)!.push(b);
+													} else loose.push(b);
+												}
+												const groupOrder = (sorting?.groups ?? []).filter((g) => grouped.has(g.name));
+												return (
+													<div key={fam} className="preset-v2-family" style={{ marginBottom: 14 }}>
+														<div className="preset-chan-head">
+															<span className="lore-meta">
+																<b>{fam}</b> · {blocks.length} 块 · 启用 {nOn}（{onChars.toLocaleString()} 字）
+															</span>
+														</div>
+														{groupOrder.map((g) => (
+															<div key={g.name}>
+																<div className="lore-meta" style={{ margin: "8px 0 3px", opacity: 0.8 }}>
+																	〔{g.name} · {g.rule}〕{g.note ? ` ${g.note}` : ""}
+																</div>
+																{grouped.get(g.name)!.map((b) => (
+																	<PresetBlockEditor
+																		key={b.id}
+																		block={b}
+																		busy={busy}
+																		note={v2Of.get(b.id)?.note}
+																		onChange={(patch) => patchBlock(b.id, patch)}
+																		onDelete={() => removeBlock(b.id)}
+																	/>
+																))}
+															</div>
+														))}
+														{loose.length > 0 && groupOrder.length > 0 && (
+															<div className="lore-meta" style={{ margin: "8px 0 3px", opacity: 0.8 }}>〔开关 · 可多开〕</div>
+														)}
+														{loose.map((b) => (
+															<PresetBlockEditor
+																key={b.id}
+																block={b}
+																busy={busy}
+																note={v2Of.get(b.id)?.note}
+																onChange={(patch) => patchBlock(b.id, patch)}
+																onDelete={() => removeBlock(b.id)}
+															/>
+														))}
+													</div>
+												);
+											})}
+										</section>
+									);
+								})()}
+
+							{tab === "del" && hasV2 && (
+								<section className="sp-section">
+									<div className="sp-hint">
+										v2 判删（旧执行环境的 COT/装配/变量/模式/自检协议＋架子分隔）：{v2Dest.del.length} 块，其中{" "}
+										{v2Dest.del.filter((b) => b.enabled).length} 块当前开着。引擎送达仍按 v1，此页是分拣审阅投影——要改判直接说块号。
+									</div>
+									{v2Dest.del.map((b) => (
+										<div
+											key={b.id}
+											style={{ display: "flex", flexDirection: "column", padding: "4px 0", borderBottom: "1px solid rgba(128,128,128,.15)" }}
+										>
+											<span className="lore-title" style={{ opacity: b.enabled ? 1 : 0.55 }}>
+												{b.enabled ? "●" : "○"} {b.name || b.id}
+											</span>
+											<span className="lore-meta">
+												{b.content.length.toLocaleString()} 字
+												{v2Of.get(b.id)?.note ? ` — ${v2Of.get(b.id)?.note}` : ""}
+											</span>
+										</div>
+									))}
+									{v2Dest.archive.length > 0 && (
+										<>
+											<div className="preset-chan-head" style={{ marginTop: 12 }}>
+												<span className="lore-meta"><b>留档</b> — 不送模，作为转换/分组的数据源</span>
+											</div>
+											{v2Dest.archive.map((b) => (
+												<div
+													key={b.id}
+													style={{ display: "flex", flexDirection: "column", padding: "4px 0" }}
+												>
+													<span className="lore-title" style={{ opacity: b.enabled ? 1 : 0.55 }}>
+														{b.enabled ? "●" : "○"} {b.name || b.id}
+													</span>
+													<span className="lore-meta">
+														{b.content.length.toLocaleString()} 字
+														{v2Of.get(b.id)?.note ? ` — ${v2Of.get(b.id)?.note}` : ""}
+													</span>
+												</div>
+											))}
+										</>
+									)}
+								</section>
+							)}
 
 							{tab === "contract" && (
 								<section className="sp-section">
@@ -646,6 +947,25 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 											</span>
 										</div>
 									))}
+									{hasV2 && v2Dest.contract.length > 0 && (
+										<>
+											<div className="preset-chan-head" style={{ marginTop: 12 }}>
+												<span className="lore-meta">
+													<b>状态栏 / 输出模块块</b>（分拣判为末尾格式块：状态栏/选项/点评等，可查看改字、开关、删除）：{v2Dest.contract.length} 块
+												</span>
+											</div>
+											{v2Dest.contract.map((b) => (
+												<PresetBlockEditor
+													key={b.id}
+													block={b}
+													busy={busy}
+													note={v2Of.get(b.id)?.note}
+													onChange={(patch) => patchBlock(b.id, patch)}
+													onDelete={() => removeBlock(b.id)}
+												/>
+											))}
+										</>
+									)}
 								</section>
 							)}
 						</>

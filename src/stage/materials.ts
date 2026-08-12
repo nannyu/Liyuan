@@ -113,6 +113,8 @@ export interface SkillFile {
 	/** 常驻档：正文随 system 送达（每拍都用的流程骨架）；拉取档走 skill_read */
 	resident: boolean;
 	body: string;
+	/** 存储目录名（skills/<dir>/SKILL.md；编辑器按它定位文件，通常与 name 一致） */
+	dir?: string;
 }
 
 /**
@@ -151,6 +153,7 @@ export function scanSkillFiles(cwd: string): SkillFile[] {
 			description: description.slice(0, 1024),
 			resident: meta.get("resident") === "true",
 			body: rawLines.slice(endIdx + 1).join("\n").trim(),
+			dir: dir.name,
 		});
 	}
 	return out;

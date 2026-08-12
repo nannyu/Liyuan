@@ -80,6 +80,9 @@ import {
 } from "../src/memory/index.ts";
 import { resolveConfigPath } from "../src/paths.ts";
 import { ensurePresetSkills, presetSkillDir, presetSkillSlug } from "../src/preset-skill.ts";
+import { ensureSortResult, loadSortResult, sortFingerprint, type SortDeps } from "../src/preset-sort.ts";
+import { scanSkillFiles } from "../src/stage/materials.ts";
+import { deleteStageSkill, saveStageSkill } from "../src/stage/skill-store.ts";
 import { parseContract } from "../src/stage/output-contract.ts";
 import type { WorldlineView } from "../src/worldline.ts";
 import {
@@ -264,6 +267,15 @@ export interface RestHost {
 	updateDiscard(): void;
 	/** 重启进程应用更新（启动脚本包裹下：退出后由脚本循环重拉） */
 	updateRestart(): void;
+	/**
+	 * 调当前会话模型做一次性旁路判断（预设分拣等装载期声明用）。
+	 * 返回模型文本或 { error }。默认关思考、4k tokens。
+	 */
+	runSideText(
+		systemPrompt: string,
+		userText: string,
+		opts?: { maxTokens?: number; reasoning?: string; signal?: AbortSignal },
+	): Promise<string | { error: string }>;
 }
 
 export interface SessionInfoLite {
@@ -910,6 +922,81 @@ function projectPersonaToConfig(cwd: string, p: Persona): void {
 
 // ---------- 路由 ----------
 
+/**
+ * 预设 AI 分拣的后台进度（PLAN-PRESET-SORT）：装载期一次性声明，进度前端轮询。
+ * 内存态，按预设名索引；重启即清（分拣结果落 manifest.v2.json，进度只是过程指示）。
+ */
+type SortProgress = {
+	preset: string;
+	status: "running" | "done" | "failed" | "manual";
+	done: number;
+	total: number;
+	phase: string;
+	error?: string;
+	fingerprint?: string;
+	updatedAt: number;
+};
+const presetSortProgress = new Map<string, SortProgress>();
+/** 正在跑的分拣任务的中止句柄（换预设/重跑时取消上一个） */
+const presetSortAbort = new Map<string, AbortController>();
+
+/**
+ * 后台起一次预设分拣（不阻塞调用方）。指纹命中缓存/手工基准则跳过（除非 force）。
+ * 失败静默——前端回落两分法，引擎送达永远走 v1。
+ */
+function kickPresetSort(host: RestHost, preset: RpPreset, opts: { force?: boolean } = {}): void {
+	const key = preset.name;
+	const fp = sortFingerprint(preset);
+	const existing = loadSortResult(host.cwd, preset.name);
+	// 缓存/基准短路：不起任务，直接反映状态（前端据此不显示进度条）
+	if (!opts.force && existing) {
+		if (existing.generatedBy !== "ai") {
+			presetSortProgress.set(key, { preset: key, status: "manual", done: 1, total: 1, phase: "手工基准", updatedAt: Date.now() });
+			return;
+		}
+		if (existing.fingerprint === fp) {
+			presetSortProgress.set(key, { preset: key, status: "done", done: 1, total: 1, phase: "已分拣（缓存）", fingerprint: fp, updatedAt: Date.now() });
+			return;
+		}
+	}
+	// 取消同预设正在跑的旧任务
+	presetSortAbort.get(key)?.abort();
+	const ac = new AbortController();
+	presetSortAbort.set(key, ac);
+	presetSortProgress.set(key, { preset: key, status: "running", done: 0, total: 0, phase: "准备", fingerprint: fp, updatedAt: Date.now() });
+	const deps: SortDeps = {
+		sideText: (sp, ut) => host.runSideText(sp, ut, { maxTokens: 4096, reasoning: "off", signal: ac.signal }),
+		onProgress: (done, total, phase) => {
+			if (ac.signal.aborted) return;
+			presetSortProgress.set(key, { preset: key, status: "running", done, total, phase, fingerprint: fp, updatedAt: Date.now() });
+		},
+		signal: ac.signal,
+	};
+	void (async () => {
+		try {
+			const outcome = await ensureSortResult(host.cwd, preset, deps, { force: opts.force });
+			if (ac.signal.aborted) return;
+			const status = outcome === "failed" ? "failed" : outcome === "manual" ? "manual" : "done";
+			presetSortProgress.set(key, {
+				preset: key,
+				status,
+				done: 1,
+				total: 1,
+				phase: outcome === "sorted" ? "分拣完成" : outcome === "cached" ? "已分拣（缓存）" : outcome === "manual" ? "手工基准" : "分拣失败",
+				fingerprint: fp,
+				...(status === "failed" ? { error: "模型分拣失败（应答不可解析或调用出错），已回落两分法" } : {}),
+				updatedAt: Date.now(),
+			});
+			if (status === "done" && outcome === "sorted") host.notify("info", `预设「${key}」AI 分拣完成`);
+		} catch (e) {
+			if (ac.signal.aborted) return;
+			presetSortProgress.set(key, { preset: key, status: "failed", done: 0, total: 0, phase: "异常", error: e instanceof Error ? e.message : String(e), updatedAt: Date.now() });
+		} finally {
+			if (presetSortAbort.get(key) === ac) presetSortAbort.delete(key);
+		}
+	})();
+}
+
 /** /api/* 请求处理；非 /api 路径返回 false 交回静态托管 */
 export async function handleApiRequest(req: IncomingMessage, res: ServerResponse, host: RestHost): Promise<boolean> {
 	const url = (req.url ?? "/").split("?")[0];
@@ -1317,15 +1404,28 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			case "GET /api/preset-skills": {
 				const eff = loadEffectivePreset(host.cwd).preset;
 				if (!eff) {
-					sendJson(res, 200, { preset: null, entries: [] });
+					sendJson(res, 200, { preset: null, entries: [], sorting: null });
 					return true;
 				}
 				const manifest = ensurePresetSkills(host.cwd, eff);
 				const enabledOf = new Map(eff.blocks.map((b) => [b.id, b.enabled]));
+				// v2 分拣投影（模型通读产物 manifest.v2.json）：仅展示层，引擎送达仍走 v1 manifest
+				let sorting: unknown = null;
+				if (manifest) {
+					const v2Path = join(presetSkillDir(host.cwd, manifest.preset), "manifest.v2.json");
+					if (existsSync(v2Path)) {
+						try {
+							sorting = JSON.parse(readFileSync(v2Path, "utf8"));
+						} catch {
+							sorting = null;
+						}
+					}
+				}
 				sendJson(res, 200, {
 					preset: manifest?.preset ?? eff.name ?? "",
 					dir: manifest ? `skills/预设-${presetSkillSlug(manifest.preset)}` : null,
 					entries: (manifest?.entries ?? []).map((e) => ({ ...e, enabled: enabledOf.get(e.blockId) === true })),
+					sorting,
 				});
 				return true;
 			}
@@ -1354,6 +1454,39 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const dir = presetSkillDir(host.cwd, manifest.preset);
 				writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, "\t"), "utf8");
 				sendJson(res, 200, { ok: true });
+				return true;
+			}
+			// ---- 预设 AI 分拣（PLAN-PRESET-SORT）：进度轮询 + 手动重跑 ----
+			case "GET /api/preset-sort/status": {
+				const eff = loadEffectivePreset(host.cwd).preset;
+				if (!eff) {
+					sendJson(res, 200, { preset: null, status: "idle" });
+					return true;
+				}
+				const live = presetSortProgress.get(eff.name);
+				if (live) {
+					sendJson(res, 200, live);
+					return true;
+				}
+				// 无内存进度：按磁盘 v2 反映（done/manual/idle）
+				const fp = sortFingerprint(eff);
+				const existing = loadSortResult(host.cwd, eff.name);
+				if (existing?.generatedBy && existing.generatedBy !== "ai") {
+					sendJson(res, 200, { preset: eff.name, status: "manual", done: 1, total: 1, phase: "手工基准" });
+				} else if (existing?.generatedBy === "ai" && existing.fingerprint === fp) {
+					sendJson(res, 200, { preset: eff.name, status: "done", done: 1, total: 1, phase: "已分拣" });
+				} else {
+					sendJson(res, 200, { preset: eff.name, status: "idle", done: 0, total: 0, phase: existing ? "预设已改，可重新分拣" : "未分拣" });
+				}
+				return true;
+			}
+			case "POST /api/preset-sort/run": {
+				const eff = loadEffectivePreset(host.cwd).preset;
+				if (!eff) throw new Error("当前无预设");
+				const body = (await readBody(req)) || "{}";
+				const force = (JSON.parse(body) as { force?: boolean }).force === true;
+				kickPresetSort(host, eff, { force });
+				sendJson(res, 200, { ok: true, preset: eff.name });
 				return true;
 			}
 			// ---- 输出合约（谢幕点名清单，§4.B）：只读投影；文件用户可改、改了以文件为准 ----
@@ -1416,6 +1549,45 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const abs = join(host.cwd, ".liyuan-skills", base);
 				if (!existsSync(abs)) throw new Error("技能文件不存在");
 				unlinkSync(abs);
+				sendJson(res, 200, { ok: true });
+				return true;
+			}
+
+			// ---- 台上写作 skill 库（skills/<目录>/SKILL.md）：编辑器 CRUD 与引擎读同一份文件，
+			// 保存后下一拍装载即生效（loadStageMaterials 每拍现读）。与 .liyuan-skills（幕后服务笔记）无关。
+			case "GET /api/stage-skills": {
+				sendJson(res, 200, {
+					skills: scanSkillFiles(host.cwd).map((s) => ({
+						dir: s.dir ?? s.name,
+						name: s.name,
+						description: s.description,
+						resident: s.resident,
+						chars: s.body.length,
+						body: s.body,
+					})),
+				});
+				return true;
+			}
+			case "POST /api/stage-skills": {
+				const body = JSON.parse(await readBody(req)) as {
+					dir?: string;
+					name?: string;
+					description?: string;
+					resident?: boolean;
+					body?: string;
+				};
+				const r = saveStageSkill(host.cwd, {
+					dir: typeof body.dir === "string" && body.dir.trim() ? body.dir : undefined,
+					name: body.name ?? "",
+					description: body.description ?? "",
+					resident: body.resident === true,
+					body: body.body ?? "",
+				});
+				sendJson(res, 200, { ok: true, dir: r.dir, note: "下一拍装载即生效（引擎每拍现读 skills/）" });
+				return true;
+			}
+			case "DELETE /api/stage-skills": {
+				deleteStageSkill(host.cwd, query.get("dir") ?? "");
 				sendJson(res, 200, { ok: true });
 				return true;
 			}
@@ -2180,6 +2352,8 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				writeJsonWithBackup(abs, preset);
 				writeJsonWithBackup(configPath(host.cwd), { ...loadConfig(host.cwd), preset: file });
 				await host.softRefreshConfig();
+				// 导入即 AI 分拣（后台，不阻塞响应；进度经 /api/preset-sort/status 轮询）
+				kickPresetSort(host, preset);
 				sendJson(res, 200, { ok: true, file, report, blockCount: preset.blocks.length, converted: isSt });
 				return true;
 			}
