@@ -31,7 +31,7 @@ function substMacros(text: string, macros: { charName: string; userName: string 
  * - 短模板展开 `$&` → 整段命中
  * - **永不**展开 `$'` / `$``（本函数不匹配它们）
  *
- * Living With Slaves 状态栏模板 >8KB 且依赖 `rawData = \`$2\``——若长串一律不展开 $n，
+ * 某卡的状态栏模板 >8KB 且依赖 `rawData = \`$2\``——若长串一律不展开 $n，
  * 会变成字面 `$2` → 状态栏空、源码泄漏。故长串也必须展开有效 $n。
  */
 export function expandSkinReplacement(template: string, match: string, captures: Array<string | undefined>): string {

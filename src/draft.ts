@@ -434,7 +434,7 @@ export function isPoliceBlock(content: string): boolean {
 	// 扣走词库=先用错词再挨个补（2026-08-02 TGbreak 瑟瑟语料实测误伤）
 	if (/(语料|词库|多种表达|称呼：|称呼:)/.test(content)) return false;
 	if (/(禁用词|词汇黑名单|厌恶的词汇|禁词表)/.test(content)) return true;
-	// 英文键名的纪律块（双人成行「Claude 禁词表」形态：Forbidden_Expressions /
+	// 英文键名的纪律块（某预设「Claude 禁词表」形态：Forbidden_Expressions /
 	// Writing_Proscription / Forbidden_Syntax_Styles）——2026-08-03 分桶审查发现漏网
 	if (/(forbidden_(?:expressions?|syntax|words?)|writing_proscription|banned_(?:words?|phrases?))/i.test(content)) {
 		return true;
@@ -470,7 +470,7 @@ const AUDIT_TIMING =
 /**
  * 「读题遵循」不算验算：`$(检查并遵循<user_def>内的要求)`、`确保输出语言为…` 这类是
  * **动笔前**的读题与合规声明，摘掉等于把预设的要求本身撕了（2026-08-03 语料实测：
- * 双人成行的 draft_notes 清单大半是这个形态）。验算的定义是「对已写出的文字回头做手术」。
+ * 某预设的 draft_notes 清单大半是这个形态）。验算的定义是「对已写出的文字回头做手术」。
  */
 const COMPLY_NOT_AUDIT = /(并遵循|遵循<|要求\)|确保遵循|检查开启|是否开启|开启了冲突)/;
 
