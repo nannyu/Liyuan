@@ -1555,7 +1555,7 @@ test("ask：用户停止 → 本拍收束，已写正文不丢（引擎兜底封
 	}
 });
 
-test("进度行中段强制调用（8/11 第四改）：指令句与包名投影按数据在场；无数据=纯事实", async () => {
+test("进度行场面包投影（8/12 剧情指导删除后）：包名投影按数据在场；无数据=纯事实", async () => {
 	const { progressLine } = await import("../src/stage/engine.ts");
 	const { createWorkspace } = await import("../src/stage/workspace.ts");
 	const ws = createWorkspace();
@@ -1564,96 +1564,13 @@ test("进度行中段强制调用（8/11 第四改）：指令句与包名投影
 	const bare = progressLine(ws, { min: 500, max: 800 });
 	assert.ok(bare.startsWith("【进度】"), "事实前缀");
 	assert.ok(!bare.includes("剧情指导") && !bare.includes("场面包"), "无数据零注入（零痕迹）");
-	const full = progressLine(ws, { min: 500, max: 800 }, ["情欲", "静场"], true);
-	assert.ok(full.includes("先 `skill_read`「剧情指导」构思本段"), "强制调用指令明写");
-	assert.ok(full.includes("可读场面包：情欲 / 静场"), "包名清单=数据投影");
-	assert.ok(full.startsWith(bare.slice(0, bare.indexOf("。") + 1)), "事实前缀不因注入改变");
+	const withPacks = progressLine(ws, { min: 500, max: 800 }, ["情欲", "打斗"]);
+	assert.ok(withPacks.includes("可读场面包：情欲 / 打斗"), "包名清单=数据投影");
+	assert.ok(!withPacks.includes("skill_read"), "不含强制指令（8/12 剧情指导已删除）");
+	assert.ok(withPacks.startsWith(bare.slice(0, bare.indexOf("。") + 1)), "事实前缀不因注入改变");
 });
 
 
-test("剧情指导受理门（8/11 强制调用）：没读就交段首拦、读后放行、每段重新计门", async () => {
-	const { cwd, sm } = makeStage();
-	mkdirSync(join(cwd, "skills", "剧情指导"), { recursive: true });
-	writeFileSync(
-		join(cwd, "skills", "剧情指导", "SKILL.md"),
-		"---\nname: 剧情指导\ndescription: 每段落笔前读\nresident: false\n---\n\n想三件事：入口、承接、节奏。",
-	);
-	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
-	try {
-		const ctxs: string[] = [];
-		const cap = (r: unknown) => (ctx: { messages?: unknown[] }) => {
-			ctxs.push(JSON.stringify(ctx.messages ?? []));
-			return r;
-		};
-		reg.setResponses([
-			cap(fauxAssistantMessage([fauxToolCall("beat_plan", { steps: ["推门"] })], { stopReason: "toolUse" })),
-			// 没读剧情指导直接交段 → 首拦
-			cap(fauxAssistantMessage([fauxToolCall("draft_append", { segment: "她推门进院。" })], { stopReason: "toolUse" })),
-			// 读了再交 → 放行
-			cap(
-				fauxAssistantMessage(
-					[fauxToolCall("skill_read", { name: "剧情指导" }), fauxToolCall("draft_append", { segment: "她推门进院。" }), fauxToolCall("beat_step_done", { step: 1 })],
-					{ stopReason: "toolUse" },
-				),
-			),
-			// 第二段没读又直接交 → 再拦一次（每段重新计门）
-			cap(fauxAssistantMessage([fauxToolCall("draft_append", { segment: "院里人抬头。" })], { stopReason: "toolUse" })),
-			// 执意重交 → 放行（每段只拦一次，防空转）
-			cap(fauxAssistantMessage([fauxToolCall("draft_append", { segment: "院里人抬头。" })], { stopReason: "toolUse" })),
-			cap(fauxAssistantMessage([fauxToolCall("draft_seal", {})], { stopReason: "toolUse" })),
-			cap(fauxAssistantMessage("")),
-			fauxScribeEmpty(),
-		] as never);
-		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"));
-		await engine.performTurn("你先进去。");
-
-		assert.ok(ctxs[2].includes("本段未受理：先 `skill_read`「剧情指导」"), "首段没读被拦，回执指路");
-		assert.ok(ctxs[3].includes("已续写（第 1 段）"), "读后交段受理");
-		assert.ok(ctxs[3].includes("想三件事：入口、承接、节奏"), "skill_read 回执送达剧情指导全文");
-		assert.ok(ctxs[4].includes("本段未受理"), "第二段重新计门再拦");
-		assert.ok(ctxs[5].includes("已续写（第 2 段）"), "执意重交放行（每段只拦一次）");
-	} finally {
-		reg.unregister();
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
-
-test("skill_read 重复读回执瘦身（8/11）：首读全文、二读一行；受理门照常被瘦身回执满足", async () => {
-	const { cwd, sm } = makeStage();
-	mkdirSync(join(cwd, "skills", "剧情指导"), { recursive: true });
-	writeFileSync(
-		join(cwd, "skills", "剧情指导", "SKILL.md"),
-		"---\nname: 剧情指导\ndescription: 每段落笔前读\nresident: false\n---\n\n想三件事：入口、承接、节奏。",
-	);
-	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
-	try {
-		const ctxs: string[] = [];
-		const cap = (r: unknown) => (ctx: { messages?: unknown[] }) => {
-			ctxs.push(JSON.stringify(ctx.messages ?? []));
-			return r;
-		};
-		reg.setResponses([
-			cap(fauxAssistantMessage([fauxToolCall("beat_plan", { steps: ["推门"] })], { stopReason: "toolUse" })),
-			// 首读 → 全文回执；交第 1 段
-			cap(fauxAssistantMessage([fauxToolCall("skill_read", { name: "剧情指导" }), fauxToolCall("draft_append", { segment: "她推门进院。" })], { stopReason: "toolUse" })),
-			// 二读 → 瘦身回执；交第 2 段照常受理（受理门被瘦身回执满足）
-			cap(fauxAssistantMessage([fauxToolCall("skill_read", { name: "剧情指导" }), fauxToolCall("draft_append", { segment: "院里人抬头。" }), fauxToolCall("beat_step_done", { step: 1 })], { stopReason: "toolUse" })),
-			cap(fauxAssistantMessage([fauxToolCall("draft_seal", {})], { stopReason: "toolUse" })),
-			cap(fauxAssistantMessage("")),
-			fauxScribeEmpty(),
-		] as never);
-		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"));
-		await engine.performTurn("你先进去。");
-
-		assert.ok(ctxs[2].includes("想三件事：入口、承接、节奏"), "首读回执=全文");
-		assert.ok(ctxs[3].includes("「剧情指导」本拍已读过，全文见上文回执。"), "二读回执=一行（瘦身）");
-		assert.equal((ctxs[3].match(/想三件事：入口、承接、节奏/g) ?? []).length, 1, "全文在上下文里只有一份");
-		assert.ok(ctxs[3].includes("已续写（第 2 段）"), "瘦身回执满足受理门，交段照常");
-	} finally {
-		reg.unregister();
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
 
 test("引擎：输出合约 v1 声明步（M-R4 首件）——一次声明落数据、谢幕照单点名、指纹缓存零重复调用", async () => {
 	const { cwd, sm } = makeStage();

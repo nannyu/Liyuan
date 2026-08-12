@@ -79,19 +79,16 @@ test("skill_read：按名读取，名单进工具描述；未知名回落直写"
 	assert.match(miss.text, /没有名为「群像」/);
 });
 
-test("默认库完整性（M-R3）：写作常驻、剧情指导轮次注入、六拉取包就位，frontmatter 合格、无乱码", () => {
+test("默认库完整性（8/12 剧情指导删除后）：写作常驻，frontmatter 合格、无乱码", () => {
 	const repo = join(import.meta.dirname, "..");
 	const files = scanSkillFiles(repo);
 	const byName = new Map(files.map((f) => [f.name, f]));
 	assert.equal(byName.get("写作")?.resident, true, "写作 常驻");
-	// 剧情指导：非常驻但也不走拉取——引擎单列，每个写作轮次随进度行强制送达（8/11 定案）
-	const guide = byName.get("剧情指导");
-	assert.ok(guide && !guide.resident && guide.body.length > 0, "剧情指导 在场且非常驻");
+	// 8/12 用户定案：剧情指导 + 所有场面包（情欲/打斗/对峙/静场/去八股/ask判断）全部删除
+	assert.ok(!byName.has("剧情指导"), "剧情指导 已删除");
 	for (const n of ["情欲", "打斗", "对峙", "静场", "去八股", "ask判断"]) {
-		const f = byName.get(n);
-		assert.ok(f && !f.resident, `${n} 为拉取包`);
-		assert.ok(f!.description.length > 0 && f!.body.length > 0, `${n} 有触发面与正文`);
+		assert.ok(!byName.has(n), `${n} 已删除`);
 	}
-	for (const f of files) assert.ok(!f.body.includes("\uFFFD"), `${f.name} 无乱码`);
+	for (const f of files) assert.ok(!f.body.includes("�"), `${f.name} 无乱码`);
 });
 
