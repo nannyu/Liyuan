@@ -241,7 +241,7 @@ function EntryRow({
 							{!draftConstant && (
 								<>
 									<Field label="主关键词" hint="逗号 / 顿号分隔">
-										<input className="panel-search" value={draftKeys} onChange={(ev) => setDraftKeys(ev.target.value)} placeholder="如：南京、吴雯妮" />
+										<input className="panel-search" value={draftKeys} onChange={(ev) => setDraftKeys(ev.target.value)} placeholder="如：南京、某角色" />
 									</Field>
 									<Field label="次要关键词" hint="可选；勾选 AND 后需同时命中">
 										<input className="panel-search" value={draftSec} onChange={(ev) => setDraftSec(ev.target.value)} />

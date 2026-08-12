@@ -8,7 +8,7 @@
  *
  * 卡实际调用面：
  * - parent.TavernHelper.generate / stopAllGeneration
- * - triggerSlash(`/send …|/trigger`)  ← Living With Slaves 开场表单
+ * - triggerSlash(`/send …|/trigger`)  ← 某卡 开场表单
  * - eventOn / eventEmit
  * - parent.TheaterAPI / handleTheaterAction
  */

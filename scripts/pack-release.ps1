@@ -1,4 +1,4 @@
-# Pack Liyuan release kits (Windows + Linux + macOS)
+﻿# Pack Liyuan release kits (Windows + Linux + macOS)
 # - No node_modules (small zip; first-run npm install)
 # - Prebuilt web/dist so no frontend toolchain required on first start
 # - No personal configs / private cards / runtime data
@@ -274,7 +274,10 @@ function Stage-Clean {
     "docs\PLAN-*.md",
     "docs\REVIEW-*.md",
     "docs\DRAFT-*.md",
-    "docs\PRESET-SPLIT-TAXONOMY.md"
+    "docs\PRESET-SPLIT-TAXONOMY.md",
+    # 内部文档（含本地绝对路径/会话定位，仅仓库可见）+ 预设装载期生成物（用户数据）
+    "docs\READING-THINKING.md",
+    "skills\预设-*"
   )
   foreach ($g in $dropGlobs) {
     $p = Join-Path $dest $g

@@ -3,12 +3,12 @@
  *
  * 顺序纪律（spec §7 P1 + skeptic fix）：
  * 1) 卡皮肤正则先认领 StatusBlock / 开局标记等 → 卡作者 HTML
- * 2) 整页围栏 HTML 文档整段认领（Living With Slaves 等），禁止撕碎
+ * 2) 整页围栏 HTML 文档整段认领（某卡 等），禁止撕碎
  * 3) 顶层标准容器 / 短 ```html 围栏切出
  * 4) 仅在剩余纯文本上再跑 splitStatusParts → 梨园统一状态卡
  *
  * **禁止二次皮肤**：wire 侧 prepareDisplayText 已应用显示正则。
- * 凡人修仙等程序卡 HTML 内仍含占位串 `lucklyjkop`，再跑会把 2.6MB 脚本再嵌一遍 →
+ * 某卡等程序卡 HTML 内仍含占位串 `lucklyjkop`，再跑会把 2.6MB 脚本再嵌一遍 →
  * `Identifier has already been declared` → 按钮全死。
  */
 

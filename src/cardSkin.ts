@@ -23,7 +23,7 @@ function substMacros(text: string, macros: { charName: string; userName: string 
  *
  * **不可**把模板直接交给 `String.replace(re, template)`：
  * JS 会把 `$'`（后文）、`$``（前文）当特殊序列。
- * 凡人修仙等程序卡的 replaceString 里有字面量 `'$'`，会被吃坏。
+ * 某程序卡的 replaceString 里有字面量 `'$'`，会被吃坏。
  *
  * 规则：
  * - 始终展开：`$$` → `$`；`$1`…`$n`（n ≤ 实际捕获组数）→ 对应捕获

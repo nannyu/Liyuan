@@ -1158,7 +1158,7 @@ export default function App() {
 		if (inputRef.current) inputRef.current.style.height = "auto";
 	}, [input, pending, conn, ws, openStoreModal, openRight]);
 
-	// 卡 HTML（如 Living With Slaves 开场表单）调用 triggerSlash(`/send …|/trigger`)
+	// 卡 HTML（如 某卡 开场表单）调用 triggerSlash(`/send …|/trigger`)
 	// 须接到输入框 / WS，否则界面显示「档案已发送」但聊天栏空白
 	const inputRefForBridge = useRef(input);
 	inputRefForBridge.current = input;

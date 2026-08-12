@@ -431,7 +431,7 @@ export function isPoliceBlock(content: string): boolean {
 	if (!content) return false;
 	if (/字数|response_length|word_count/i.test(content)) return false;
 	// 供给特征优先：语料/词库类块（给写作供词的）即便夹带禁用词小节也留在写作台上——
-	// 扣走词库=先用错词再挨个补（2026-08-02 TGbreak 瑟瑟语料实测误伤）
+	// 扣走词库=先用错词再挨个补（2026-08-02 某预设瑟瑟语料实测误伤）
 	if (/(语料|词库|多种表达|称呼：|称呼:)/.test(content)) return false;
 	if (/(禁用词|词汇黑名单|厌恶的词汇|禁词表)/.test(content)) return true;
 	// 英文键名的纪律块（某预设「Claude 禁词表」形态：Forbidden_Expressions /
@@ -514,7 +514,7 @@ export function stripAuditLines(content: string): { text: string; dropped: numbe
 const GENERIC_TAGS = new Set(["details", "summary", "br", "div", "span", "p", "b", "i", "hr", "html", "body"]);
 /**
  * 指代性标签不算输出模块：预设叙述里常用 <user>/<char> 指"用户/角色"本人
- * （2026-08-02 实测：TGbreak 行动选项块的「选择的内容是<user>的行动」被误判成必须模块，
+ * （2026-08-02 实测：某预设行动选项块的「选择的内容是<user>的行动」被误判成必须模块，
  * 模型顺从地发明了一个 <user> 块塞进正文）。
  */
 const REFERENT_TAGS = new Set(["user", "char", "assistant", "human", "system", "player_input", "bot"]);

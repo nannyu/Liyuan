@@ -10,7 +10,7 @@ export function programViewportHeight(win?: { innerHeight: number } | null): num
 
 /**
  * html/body 根级 CSS 是否「视口接管」：同时声明 overflow:hidden 与 height:100%/100*vh。
- * 只认 html/body 选择器块（含 JS 模板串里的，凡人修仙整页在模板串内）；
+ * 只认 html/body 选择器块（含 JS 模板串里的，某卡整页在模板串内）；
  * min-height:100vh 不算——那是「至少一屏」的内容流写法，正需要量高覆盖。
  */
 function hasRootViewportCss(html: string): boolean {
@@ -23,15 +23,15 @@ function hasRootViewportCss(html: string): boolean {
 }
 
 /**
- * 是否「视口接管型程序卡」（凡人修仙主 UI、道渊开局创建器等）——iframe 须锁视口高，
+ * 是否「视口接管型程序卡」（某卡主 UI、某卡开局创建器等）——iframe 须锁视口高，
  * 且 **不得** 注入 height:auto/overflow 覆盖、不注入高度上报（见 buildSrcDoc）。
  *
- * **不要**按体积一刀切：道渊 MVU 状态栏 182KB / XML 状态栏 88KB 都是完整 HTML+JS，
+ * **不要**按体积一刀切：某卡 MVU 状态栏 182KB / XML 状态栏 88KB 都是完整 HTML+JS，
  * 却是透明内容流（零 vh、根级无接管 CSS）；按体积锁 78vh 就是「大块黑空 + 抖动」事故本身。
- * Living With Slaves 状态栏（~11KB doctype+script，折叠态 ~200px）同理。
+ * 某卡 状态栏（~11KB doctype+script，折叠态 ~200px）同理。
  *
  * 判定（满足其一，均要求 scripts）：
- * - 根级接管 CSS：html/body 同时 overflow:hidden + height:100%（道渊「开局创造角色」126KB 无 fixed，全靠这条）
+ * - 根级接管 CSS：html/body 同时 overflow:hidden + height:100%（某卡「开局创造角色」126KB 无 fixed，全靠这条）
  * - fixed 铺满 + 视口单位：position:fixed 与 100vh/100dvh 并存（body 内联样式等根级 CSS 缺席的形态）
  */
 export function looksLikeProgramApp(html: string, scripts: boolean): boolean {
@@ -39,7 +39,7 @@ export function looksLikeProgramApp(html: string, scripts: boolean): boolean {
 	if (!/<script[\s>]/i.test(html)) return false;
 	if (hasRootViewportCss(html)) return true;
 	// fixed 铺满判定：要求 fixed 与 100vh 在同一样式块内（真全屏 UI），
-	// 而非文档任意两处各出现一次（道渊欢迎卡有 fixed 装饰 + 某处 100vh，但整体是内容流）
+	// 而非文档任意两处各出现一次（某卡欢迎卡有 fixed 装饰 + 某处 100vh，但整体是内容流）
 	if (/\bposition\s*:\s*fixed[^}]*100[dsl]?vh|\b100[dsl]?vh[^}]*position\s*:\s*fixed/i.test(html)) return true;
 	return false;
 }
@@ -52,7 +52,7 @@ const LEGACY_BASE_CSS =
 
 /**
  * 无痕·片段(状态栏 div 等):透明底 + **保留换行**(纯文本字段一行一项)。
- * 整页文档不可用 pre-wrap，否则 Living With Slaves 等 flex/绝对布局会被毁掉。
+ * 整页文档不可用 pre-wrap，否则 某卡 等 flex/绝对布局会被毁掉。
  */
 const SEAMLESS_FRAGMENT_CSS =
 	`html,body{margin:0;padding:0;background:transparent;` +
@@ -63,7 +63,7 @@ const SEAMLESS_FRAGMENT_CSS =
  * 无痕·整页文档:透明兜底。
  * **禁止**让 html/body 吃满 100vh——iframe 量高时 100vh 会跟着父高涨，形成白底无限向下扩的反馈环。
  * 仅用于**内容流**文档；视口接管型（looksLikeProgramApp）绝不可注入：
- * height:auto!important 会打断卡自己的 height:100% 链 → 容器全塌陷只剩 fixed 层（道渊开局创建器事故）。
+ * height:auto!important 会打断卡自己的 height:100% 链 → 容器全塌陷只剩 fixed 层（某卡开局创建器事故）。
  */
 const SEAMLESS_DOC_CSS =
 	`html,body{margin:0;padding:0;background:transparent;` +
@@ -123,7 +123,7 @@ export const HEIGHT_REPORTER_SNIPPET =
 
 /**
  * 在脚本正文中找「真正的」</script> 结束位置。
- * 跳过 JS 字符串/模板/注释里的字面量 `</script`（凡人修仙把整页 HTML 塞进模板字符串，
+ * 跳过 JS 字符串/模板/注释里的字面量 `</script`（某卡把整页 HTML 塞进模板字符串，
  * 内含 `</script></body></html>`，HTML 解析器会在此截断 → 主脚本只剩 ~36KB → 按钮无监听）。
  */
 export function findScriptCloseIndex(html: string, bodyStart: number): number {
@@ -312,7 +312,7 @@ export function buildSrcDoc(html: string, scripts: boolean, seamless: boolean): 
 			withHead = `<!doctype html><html><head>${head}</head><body>${trimmed}</body></html>`;
 		}
 		// 高度脚本必须插在**最后一个** </body> 前。
-		// 凡人修仙主脚本模板里有 `</body></html>` 字符串；replace 第一个会把
+		// 某卡主脚本模板里有 `</body></html>` 字符串；replace 第一个会把
 		// <script>height...</script> 插进 JS 模板 → 主脚本在 ~36KB 被截断 → 按钮无监听。
 		if (tail) {
 			const lower = withHead.toLowerCase();
