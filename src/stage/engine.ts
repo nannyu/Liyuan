@@ -303,10 +303,10 @@ const rangeNote = (wordRange?: { min: number; max: number }): string =>
 	wordRange ? `（目标 ${wordRange.min}–${wordRange.max}）` : "";
 
 /**
- * 进度行：每轮替换语义（替代开工卡/回看卡）。事实（路标进度与字数）+ 强制调用指令
- * （PLAN-M-R3 §1 第四改，8/11 用户定案：「明明确确写着调用剧情指导 skill 进行创作」）：
- * 全文注入实弹证伪（送达证实、模型不照做），改为指令模型 skill_read「剧情指导」——
- * 工具调用是模型可靠执行的动作，思考指令不是；受理门（agentLoop 内）为其做结构保证。
+ * 进度行：每轮替换语义（替代开工卡/回看卡）。事实（路标进度与字数）+ 必读 skill 指令。
+ * 8/12 复现并泛化（8/11 四改定形，原硬编码「剧情指导」→ 现认 frontmatter `每轮` 标志）：
+ * 工具调用是模型可靠执行的动作、思考指令不是——把死磕挂到强制 skill_read 制造的停顿上，
+ * 受理门（agentLoop 内）为其做结构保证；认数据不认名字（合铁律三）。
  *
  * 字数测量**只活在写作中的轮次层**（8/10 复核定案）：续写的触发条件就是
  * 「正文低于目标→接着写」，死板但有效——这是续写机能的燃料，不是修复诱饵。
@@ -317,6 +317,7 @@ export function progressLine(
 	ws: TurnWorkspace,
 	wordRange?: { min: number; max: number },
 	packNames?: string[],
+	forcedSkills?: string[],
 ): string {
 	const parts: string[] = [];
 	if (ws.plan.length > 0) {
@@ -324,9 +325,13 @@ export function progressLine(
 		if (i >= 0) parts.push(`路标 ${i + 1}/${ws.plan.length}「${ws.plan[i]!.text}」`);
 	}
 	parts.push(`已演 ${ws.appends} 段，正文约 ${draftBodyCharsOf(ws)} 字${rangeNote(wordRange)}`);
-	// 8/12 剧情指导删除后：不再有强制指令，只保留名单投影（让模型知道有哪些 skill 可用）
+	// 必定读取（每轮）skill：落笔前强制先读（受理门保证）——制造停顿=死磕燃料；标志在数据不在名字
+	const forced =
+		forcedSkills && forcedSkills.length > 0
+			? `每段落笔前先 \`skill_read\`${forcedSkills.map((n) => `「${n}」`).join("")}构思本段，再 \`draft_append\`。`
+			: "";
 	const packs = packNames && packNames.length > 0 ? `可读场面包：${packNames.join(" / ")}。` : "";
-	return `【进度】${parts.join("；")}。${packs}`;
+	return `【进度】${parts.join("；")}。${forced}${packs}`;
 }
 
 /** 判定注入：收笔前一次性（8/12 起不再依赖路标勾选）——续写/ask/收笔归模型判断
@@ -573,7 +578,8 @@ export class StageEngine {
 		// 回合工作区 = 正文工件的落点；字数目标在此提取一次（数据，供末端注入）。
 		// 读侧依赖先建：统一层按注入情况决定哪些世界书工具上清单（M-D2）。
 		// 可读名单：拉取档 skill 文件（常驻档已随 system 全文送达，不重复上单）+ 进口 topic 包。
-		// 8/12 剧情指导删除后：guidePull 变量已无用，skillNames 直接聚合拉取包名单
+		// 必定读取（每轮）skill：受理门强制落笔前先读（认 frontmatter `每轮` 标志，不认具体名字）
+		const forcedSkills = materials.skillFiles.filter((f) => f.everyBeat).map((f) => f.name);
 		const skillNames = [
 			...materials.skillFiles.filter((f) => !f.resident).map((f) => f.name),
 			...materials.skillPacks.keys(),
@@ -762,8 +768,9 @@ export class StageEngine {
 				language: config.language,
 				readDeps,
 				directText: text,
-				// 8/12 剧情指导删除后：只传 skillNames（拉取包名单投影），guidePull 已无用
+				// skill_read 名单投影 + 必定读取（每轮）skill 集合（受理门用）
 				skillNames,
+				forcedSkills,
 				...(curtain ? { curtain } : {}),
 			});
 			if (turn.final) final = turn.final;
@@ -973,8 +980,10 @@ export class StageEngine {
 		readDeps: StageToolDeps;
 		/** 首轮直出正文（调用方已流式外发） */
 		directText: string;
-		/** 8/12 剧情指导删除后：skill_read 可读名单投影（让模型知道有哪些 skill 可用） */
+		/** skill_read 可读名单投影（让模型知道有哪些 skill 可用） */
 		skillNames: string[];
+		/** 必定读取（每轮）skill 名单：落笔前受理门强制先读（制造停顿=死磕燃料） */
+		forcedSkills: string[];
 		/** 谢幕注入文案（输出合约非空才有；无 = 不注入，拍自然收束） */
 		curtain?: string;
 	}): Promise<{ final: AssistantMsgLike | null; errored?: string; text: string; tailText?: string }> {
@@ -1006,7 +1015,9 @@ export class StageEngine {
 		let lastConsumed = 0; // 本轮开始时 text 长度——判定「本轮新产出文本」用
 		// 五注入日程状态（D9：进度行替换语义；判定/记账/谢幕一次性）
 		let verdictInjected = false;
-		// 8/12：剧情指导受理门已删除，guideReadForSeg / guideNudgedForSeg 变量已无用
+		// 必定读取（每轮）受理门：每段落笔前必须先读完所有 forcedSkills（成功交段后每段重置）
+		const readThisSeg = new Set<string>(); // 本段已读的 forcedSkill 名
+		let forcedNudgedForSeg = false; // 本段已催过一次（防空转安全阀）
 		const skillReadDone = new Set<string>(); // 重复读瘦身：本拍已读过全文的 skill 名
 		let ledgerInjected = false;
 		let ledgerDone = false;
@@ -1127,10 +1138,21 @@ export class StageEngine {
 					// 记账轮的结构信号（§2.3）：写账工具被调＝记账仍在进行；面板写入计数进工作区
 					if (LEDGER_TOOLS.has(name)) ledgerCallThisRound = true;
 					if (name === "panel_write" || name === "panel_close") o.ws.panelWrites++;
-					// 8/12：剧情指导 skill 及受理门已删除，skill_read 重复读瘦身保留（通用机制）
+					// 必定读取（每轮）受理门（复现 8/11「强制调用」，泛化为认 `每轮` 标志不认名字）：
+					// 落笔前必须先 skill_read 完所有 forcedSkills——没读全就交段，本段首次不受理（回执指路）；
+					// 模型执意重交则放行（每段只拦一次，防空转，安全阀同封笔催告）。
 					const skillReadName =
 						name === "skill_read" ? (call.arguments as { name?: string } | undefined)?.name : undefined;
-					if (skillReadName && skillReadDone.has(skillReadName)) {
+					if (skillReadName && o.forcedSkills.includes(skillReadName)) readThisSeg.add(skillReadName);
+					const unreadForced = o.forcedSkills.filter((n) => !readThisSeg.has(n));
+					if (name === "draft_append" && unreadForced.length > 0 && !forcedNudgedForSeg) {
+						forcedNudgedForSeg = true;
+						r = {
+							text: `本段未受理：先 \`skill_read\`${unreadForced.map((n) => `「${n}」`).join("")}构思这一段，再重交。`,
+							activity: "交段暂缓——先读必定 skill",
+							ok: false,
+						};
+					} else if (skillReadName && skillReadDone.has(skillReadName)) {
 						// 重复读回执瘦身（8/11）：skill 文件在一拍内静态，第二次起的读不再重发全文
 						// （首读回执仍在上文）——动作与停顿保留（脚手架本体），重复文本归零。
 						// 只对 skill 合法：内容静态可预知，代答不丢信息；MCP 等实时应答永不代答。
@@ -1188,7 +1210,11 @@ export class StageEngine {
 						o.ws.mediaDeliveries = o.ws.mediaDeliveries ?? [];
 						o.ws.mediaDeliveries.push({ toolName: name, details: mediaDetails, text: r.text });
 					}
-					// 8/12：剧情指导受理门已删除，下方重置门禁代码已无用
+					// 必定读取受理门：本段真交上了 → 清空已读、下一段重新计门
+					if (name === "draft_append" && r.ok !== false) {
+						readThisSeg.clear();
+						forcedNudgedForSeg = false;
+					}
 					// 重复读瘦身：名单内 skill 首读成功后记名（未知名回落直写不记，避免把 miss 记成已读）
 					if (skillReadName && o.skillNames.includes(skillReadName) && r.ok !== false) {
 						skillReadDone.add(skillReadName);
@@ -1264,8 +1290,7 @@ export class StageEngine {
 						verdictInjected = true;
 						convo.push(nowMsg(verdictInjection(o.ws, o.wsDeps.userName, o.wsDeps.rules.wordRange)));
 					} else {
-						// 8/12 剧情指导删除后：progressLine 不再需要 guidePull 参数
-						replaceProgressLine(convo, progressLine(o.ws, o.wsDeps.rules.wordRange, o.skillNames));
+						replaceProgressLine(convo, progressLine(o.ws, o.wsDeps.rules.wordRange, o.skillNames, o.forcedSkills));
 					}
 				}
 				// 工作区仍空（纯探索轮）：不注入——规划卡已随首轮末端注入送达
@@ -1458,7 +1483,19 @@ export class StageEngine {
 			formatState,
 			getSkill: (name) => {
 				const m = loadStageMaterials(cwd);
-				return m.skillFiles.find((f) => f.name === name)?.body ?? m.skillPacks.get(name);
+				const body = m.skillFiles.find((f) => f.name === name)?.body ?? m.skillPacks.get(name);
+				// 动态表格：skill 正文里的 {{可用skill}} 占位符 → 当前启用 skill 表（名/介绍/必读或按需）
+				if (body && body.includes("{{可用skill}}")) {
+					const rows = m.skillFiles
+						.filter((f) => f.name !== name && !f.resident)
+						.map((f) => `| ${f.name} | ${f.description.replace(/\|/g, "\\|").replace(/\s+/g, " ")} | ${f.everyBeat ? "必读" : "按需"} |`);
+					const table =
+						rows.length > 0
+							? ["| skill | 大致介绍 | 读取 |", "|---|---|---|", ...rows].join("\n")
+							: "（暂无其他 skill）";
+					return body.replace("{{可用skill}}", table);
+				}
+				return body;
 			},
 		};
 	}

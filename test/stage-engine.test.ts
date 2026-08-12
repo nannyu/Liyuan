@@ -1641,7 +1641,7 @@ test("ask：用户停止 → 本拍收束，已写正文不丢（引擎兜底封
 	}
 });
 
-test("进度行场面包投影（8/12 剧情指导删除后）：包名投影按数据在场；无数据=纯事实", async () => {
+test("进度行场面包投影（8/12 skill指导删除后）：包名投影按数据在场；无数据=纯事实", async () => {
 	const { progressLine } = await import("../src/stage/engine.ts");
 	const { createWorkspace } = await import("../src/stage/workspace.ts");
 	const ws = createWorkspace();
@@ -1649,11 +1649,14 @@ test("进度行场面包投影（8/12 剧情指导删除后）：包名投影按
 	ws.appends = 1;
 	const bare = progressLine(ws, { min: 500, max: 800 });
 	assert.ok(bare.startsWith("【进度】"), "事实前缀");
-	assert.ok(!bare.includes("剧情指导") && !bare.includes("场面包"), "无数据零注入（零痕迹）");
+	assert.ok(!bare.includes("skill指导") && !bare.includes("场面包"), "无数据零注入（零痕迹）");
 	const withPacks = progressLine(ws, { min: 500, max: 800 }, ["情欲", "打斗"]);
 	assert.ok(withPacks.includes("可读场面包：情欲 / 打斗"), "包名清单=数据投影");
-	assert.ok(!withPacks.includes("skill_read"), "不含强制指令（8/12 剧情指导已删除）");
+	assert.ok(!withPacks.includes("skill_read"), "仅包名清单=被动投影，不含强制指令");
 	assert.ok(withPacks.startsWith(bare.slice(0, bare.indexOf("。") + 1)), "事实前缀不因注入改变");
+	// 必定读取（每轮）skill：进度行携带落笔前强制先读指令（复现 8/11「强制调用」，受理门配套）
+	const withForced = progressLine(ws, { min: 500, max: 800 }, ["skill指导"], ["skill指导"]);
+	assert.ok(withForced.includes("skill_read") && withForced.includes("skill指导"), "forcedSkills→落笔前强制先读指令");
 });
 
 

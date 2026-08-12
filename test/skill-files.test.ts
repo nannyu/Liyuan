@@ -46,7 +46,7 @@ test("scanSkillFiles：无 skills 目录 → 空数组（零痕迹的前提）",
 	}
 });
 
-test("system 渲染：常驻包全文入 system（署名），拉取包只进 L1 索引；无包零痕迹", () => {
+test("system 渲染：常驻包全文入 system（署名），拉取包不进 system（清单由skill指导动态生成）；无包零痕迹", () => {
 	const skills = [
 		{ name: "写作", description: "每拍写作流程", resident: true, body: "## 开拍\n先想三件事。" },
 		{ name: "打斗", description: "打斗场面写法与示范", resident: false, body: "示范段……" },
@@ -54,7 +54,7 @@ test("system 渲染：常驻包全文入 system（署名），拉取包只进 L1
 	const p = buildStageSystemPrompt({ card, config, constantLore: [], skills });
 	assert.ok(p.includes("# skill：写作（常驻）"), "常驻包有署名标题");
 	assert.ok(p.includes("先想三件事"), "常驻包正文全文在场");
-	assert.ok(p.includes("- 打斗 — 打斗场面写法与示范"), "拉取包进 L1 索引");
+	assert.ok(!p.includes("打斗"), "拉取包不进 system（索引已删，清单归skill指导动态表格）");
 	assert.ok(!p.includes("示范段"), "拉取包正文不进 system");
 
 	const empty = buildStageSystemPrompt({ card, config, constantLore: [], skills: [] });
@@ -79,15 +79,17 @@ test("skill_read：按名读取，名单进工具描述；未知名回落直写"
 	assert.match(miss.text, /没有名为「群像」/);
 });
 
-test("默认库完整性（8/12 剧情指导删除后）：写作常驻，frontmatter 合格、无乱码", () => {
+test("默认库完整性（skill指导复现后）：写作常驻、skill指导每轮、ask判断在场，frontmatter 合格、无乱码", () => {
 	const repo = join(import.meta.dirname, "..");
 	const files = scanSkillFiles(repo);
 	const byName = new Map(files.map((f) => [f.name, f]));
 	assert.equal(byName.get("写作")?.resident, true, "写作 常驻");
-	// 8/12 用户定案：剧情指导 + 所有场面包（情欲/打斗/对峙/静场/去八股/ask判断）全部删除
-	assert.ok(!byName.has("剧情指导"), "剧情指导 已删除");
-	for (const n of ["情欲", "打斗", "对峙", "静场", "去八股", "ask判断"]) {
-		assert.ok(!byName.has(n), `${n} 已删除`);
+	// 8/12 复现：skill指导=每轮（必定读取，受理门强制先读）；ask判断 取回（按需）
+	assert.equal(byName.get("skill指导")?.everyBeat, true, "skill指导 每轮");
+	assert.equal(byName.get("ask判断")?.everyBeat, true, "ask判断 每轮");
+	// 未复现的场面包仍不在
+	for (const n of ["情欲", "打斗", "对峙", "静场", "去八股"]) {
+		assert.ok(!byName.has(n), `${n} 未复现`);
 	}
 	for (const f of files) assert.ok(!f.body.includes("�"), `${f.name} 无乱码`);
 });

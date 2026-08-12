@@ -281,15 +281,10 @@ export function buildStageSystemPrompt({
 	}
 
 	// skill 素材位（M-R2 §4.C）：常驻包正文随 system 送达（署名数据，零 harness 引导语）；
-	// 拉取包只列 L1 索引（name — description），读不读归模型。无包零痕迹（不凭空点名）。
+		// 非驻留 skill 的清单不在这里——由「skill指导」每轮必读时动态生成（一张表），此处零重复。
 	if (skills && skills.length > 0) {
 		for (const sk of skills.filter((x) => x.resident)) {
 			sections.push(`# skill：${sk.name}（常驻）\n${sk.body}`);
-		}
-		const pullable = skills.filter((x) => !x.resident);
-		if (pullable.length > 0 && tools !== false) {
-			const index = pullable.map((x) => `- ${x.name} — ${x.description}`).join("\n");
-			sections.push(`# 可用 skill（\`skill_read\` 按名读取）\n${index}`);
 		}
 	}
 

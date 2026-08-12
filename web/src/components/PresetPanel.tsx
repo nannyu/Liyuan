@@ -885,10 +885,6 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 
 							{tab === "del" && hasV2 && (
 								<section className="sp-section">
-									<div className="sp-hint">
-										v2 判删（旧执行环境的 COT/装配/变量/模式/自检协议＋架子分隔）：{v2Dest.del.length} 块，其中{" "}
-										{v2Dest.del.filter((b) => b.enabled).length} 块当前开着。引擎送达仍按 v1，此页是分拣审阅投影——要改判直接说块号。
-									</div>
 									{v2Dest.del.map((b) => (
 										<div
 											key={b.id}
@@ -929,10 +925,6 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 
 							{tab === "contract" && (
 								<section className="sp-section">
-									<div className="sp-hint">
-										谢幕注入照单点名的格式块（供数：{contract.data?.declared ? "装载期模型声明" : "识别器 v0"}）。
-										文件 {contract.data?.file ?? ".liyuan/output-contract.json"} 可手改，改了以文件为准。
-									</div>
 									{(contract.data?.modules ?? []).length === 0 && (
 										<div className="sp-empty">本套卡+预设无格式块要求（谢幕不注入，拍自然收束）。</div>
 									)}

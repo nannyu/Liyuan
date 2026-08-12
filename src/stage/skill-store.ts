@@ -26,6 +26,8 @@ export interface StageSkillInput {
 	name: string;
 	description: string;
 	resident: boolean;
+	/** 必定读取（每轮）：落笔前受理门强制先读；与 resident 互斥（前端三选一） */
+	everyBeat: boolean;
 	body: string;
 }
 
@@ -46,7 +48,7 @@ export function saveStageSkill(cwd: string, input: StageSkillInput): { dir: stri
 		if (existsSync(folder)) throw new Error(`目录 skills/${dir} 已被占用（不是 skill）`);
 	}
 	mkdirSync(folder, { recursive: true });
-	const text = ["---", `name: ${name}`, `description: ${description}`, `resident: ${input.resident ? "true" : "false"}`, "---", "", input.body.trim(), ""].join("\n");
+	const text = ["---", `name: ${name}`, `description: ${description}`, `resident: ${input.resident ? "true" : "false"}`, `每轮: ${input.everyBeat ? "true" : "false"}`, "---", "", input.body.trim(), ""].join("\n");
 	writeFileSync(file, text, "utf8");
 	return { dir };
 }

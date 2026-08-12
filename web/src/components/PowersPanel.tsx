@@ -8,6 +8,7 @@ import { useRef, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut, downloadText, type SkillInfo } from "../api.ts";
 import { IconPencil, IconTrash } from "./icons.tsx";
 import { ConfirmButton, PanelStatus, Toggle, useAction, usePanelData } from "./kit.tsx";
+import { SkillLibrary } from "./SkillLibrary.tsx";
 
 // ---------- MCP 类型（与 /api/mcp 对齐） ----------
 
@@ -698,144 +699,6 @@ function McpSection({ toast }: { toast: (level: "info" | "warning" | "error", te
 	);
 }
 
-// ---------- 预设 skill（PLAN-PRESET-SKILL）：预设块的 skill 投影，开关与预设页签同真源 ----------
-
-interface PresetSkillEntry {
-	blockId: string;
-	name: string;
-	channel: "system" | "postHistory";
-	chars: number;
-	nature: string;
-	fate: string;
-	file: string;
-	note?: string;
-	edited?: boolean;
-	enabled: boolean;
-}
-
-const FATE_OPTIONS = ["常驻A", "常驻B", "常驻C", "skill:general", "skill:nsfw", "仅规则提取", "退场"];
-
-function PresetSkillRow({
-	e,
-	busy,
-	onToggle,
-	onFate,
-	toast,
-}: {
-	e: PresetSkillEntry;
-	busy: boolean;
-	onToggle: (e: PresetSkillEntry) => void;
-	onFate: (e: PresetSkillEntry, fate: string) => void;
-	toast: (level: "info" | "warning" | "error", text: string) => void;
-}) {
-	const [open, setOpen] = useState(false);
-	const [content, setContent] = useState<string | null>(null);
-	const view = async () => {
-		if (!open && content === null) {
-			try {
-				const r = await apiGet<{ content: string }>(`/api/preset-skills/content?blockId=${encodeURIComponent(e.blockId)}`);
-				setContent(r.content);
-			} catch (err) {
-				toast("error", err instanceof Error ? err.message : String(err));
-				return;
-			}
-		}
-		setOpen(!open);
-	};
-	return (
-		<div className={`lore-item preset-skill ${e.enabled ? "" : "off"}`}>
-			<div className="lore-head">
-				<Toggle checked={e.enabled} disabled={busy} onChange={() => onToggle(e)} />
-				<button className="lore-title" onClick={view} title={e.note ?? e.file}>
-					{e.name}
-				</button>
-				<span className="lore-meta">{e.chars} 字</span>
-				<span className="lore-meta">{e.nature}</span>
-				<select
-					className="fate-select"
-					value={e.fate}
-					disabled={busy}
-					onChange={(ev) => onFate(e, ev.target.value)}
-					title={e.edited ? "已手改（重生成保留）" : "生成判定"}
-				>
-					{(FATE_OPTIONS.includes(e.fate) ? FATE_OPTIONS : [e.fate, ...FATE_OPTIONS]).map((f) => (
-						<option key={f} value={f}>
-							{f}
-							{e.edited && f === e.fate ? " ✎" : ""}
-						</option>
-					))}
-				</select>
-			</div>
-			{open && content !== null && <pre className="lore-content">{content}</pre>}
-		</div>
-	);
-}
-
-function PresetSkillSection({ toast }: { toast: (level: "info" | "warning" | "error", text: string) => void }) {
-	const { data, error, loading, reload } = usePanelData(
-		() => apiGet<{ preset: string | null; dir?: string | null; entries: PresetSkillEntry[] }>("/api/preset-skills"),
-		{ watchAgent: true, cacheKey: "/api/preset-skills" },
-	);
-	const { busy, run } = useAction(toast);
-	if (!data?.preset) return null;
-	const toggle = (e: PresetSkillEntry) =>
-		run(async () => {
-			await apiPut("/api/preset", { blocks: [{ id: e.blockId, enabled: !e.enabled }] });
-			reload();
-		}, e.enabled ? "已关闭（预设草稿同步）" : "已开启（预设草稿同步）");
-	const fate = (e: PresetSkillEntry, f: string) =>
-		run(async () => {
-			await apiPost("/api/preset-skills/fate", { blockId: e.blockId, fate: f });
-			reload();
-		}, `去向改为 ${f}`);
-	// 两分法（8/11 用户定案）：存活看 fate（退场/仅规则提取=失效，折叠可复活）；
-	// 归组看身份（nature）：A 破限/C 边界→提示词；其余（文风/方法论/规则）→skill
-	const destOf = (e: PresetSkillEntry): "prompt" | "skill" | "dead" => {
-		if (!e.fate.includes("常驻") && !e.fate.includes("skill:")) return "dead";
-		const nat = e.nature.replace(/^兜底:/, "");
-		return nat === "A" || nat === "C" ? "prompt" : "skill";
-	};
-	const groups: Array<["prompt" | "skill", string]> = [
-		["prompt", "→ 系统提示词（破限/边界）"],
-		["skill", "→ skill（文风/方法论）"],
-	];
-	const dead = data.entries.filter((e) => destOf(e) === "dead");
-	return (
-		<section className="sp-section">
-			<h3 className="sp-h">
-				预设 skill：{data.preset}
-				{data.dir && <span className="lore-meta" title="后端文件位置"> {data.dir}/</span>}
-			</h3>
-			<PanelStatus loading={loading} error={error} hasData={!!data} />
-			<div className="sp-hint">
-				每块一个标准文件（含关闭块与失效块，无一蒸发）。开关与预设页签同一真源；去向可改，重生成时保留。
-			</div>
-			{groups.map(([key, label]) => {
-				const items = data.entries.filter((e) => destOf(e) === key);
-				if (items.length === 0) return null;
-				return (
-					<div key={key}>
-						<div className="sp-subhead">{label}（开 {items.filter((e) => e.enabled).length}/{items.length}）</div>
-						{items.map((e) => (
-							<PresetSkillRow key={e.blockId} e={e} busy={busy} onToggle={toggle} onFate={fate} toast={toast} />
-						))}
-					</div>
-				);
-			})}
-			{dead.length > 0 && (
-				<details className="legacy-group">
-					<summary>
-						已失效不送模：{dead.length} 块 / {dead.reduce((n, e) => n + e.chars, 0).toLocaleString()} 字（旧环境程序内容，机制已覆盖；改去向可复活）
-					</summary>
-					{dead.map((e) => (
-						<PresetSkillRow key={e.blockId} e={e} busy={busy} onToggle={toggle} onFate={fate} toast={toast} />
-					))}
-				</details>
-			)}
-		</section>
-	);
-}
-
 export function PowersPanel({ toast }: { toast: (level: "info" | "warning" | "error", text: string) => void }) {
 	const [tab, setTab] = useState<"skills" | "mcp">("skills");
 	const { data, error, loading, reload } = usePanelData(() => apiGet<{ skills: SkillInfo[] }>("/api/skills"), { watchAgent: true, cacheKey: "/api/skills" });
@@ -852,7 +715,7 @@ export function PowersPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		<div className="panel-body">
 			<div className="seg-row seg-tabs">
 				<button className={`seg ${tab === "skills" ? "active" : ""}`} onClick={() => setTab("skills")}>
-					技能（{list.length}）
+					技能
 				</button>
 				<button className={`seg ${tab === "mcp" ? "active" : ""}`} onClick={() => setTab("mcp")}>
 					MCP
@@ -860,20 +723,24 @@ export function PowersPanel({ toast }: { toast: (level: "info" | "warning" | "er
 			</div>
 
 			{tab === "skills" && (
-				<section className="sp-section">
-					<PanelStatus loading={loading} error={error} hasData={!!data} />
-					{data && (
-						<>
-							<NewSkillForm onCreated={reload} toast={toast} />
-							{list.length === 0 && <div className="sp-empty">技能库是空的，可手动新建或导入。</div>}
-							{list.map((s) => (
-								<SkillRow key={s.file} s={s} busy={busy} onSaved={reload} onDelete={remove} toast={toast} />
-							))}
-						</>
-					)}
-				</section>
+				<>
+					<div className="preset-chan-head"><span className="lore-meta"><b>扮演教导</b> · 写作/文风/场面</span></div>
+					<SkillLibrary toast={toast} />
+					<div className="preset-chan-head" style={{ marginTop: 12 }}><span className="lore-meta"><b>办事笔记</b> · 外部服务调用</span></div>
+					<section className="sp-section">
+						<PanelStatus loading={loading} error={error} hasData={!!data} />
+						{data && (
+							<>
+								<NewSkillForm onCreated={reload} toast={toast} />
+								{list.length === 0 && <div className="sp-empty">还没有办事笔记，可手动新建或导入。</div>}
+								{list.map((s) => (
+									<SkillRow key={s.file} s={s} busy={busy} onSaved={reload} onDelete={remove} toast={toast} />
+								))}
+							</>
+						)}
+					</section>
+				</>
 			)}
-			{tab === "skills" && <PresetSkillSection toast={toast} />}
 
 			{tab === "mcp" && <McpSection toast={toast} />}
 		</div>

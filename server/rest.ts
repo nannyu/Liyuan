@@ -1562,6 +1562,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 						name: s.name,
 						description: s.description,
 						resident: s.resident,
+						everyBeat: s.everyBeat,
 						chars: s.body.length,
 						body: s.body,
 					})),
@@ -1574,6 +1575,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					name?: string;
 					description?: string;
 					resident?: boolean;
+					everyBeat?: boolean;
 					body?: string;
 				};
 				const r = saveStageSkill(host.cwd, {
@@ -1581,6 +1583,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					name: body.name ?? "",
 					description: body.description ?? "",
 					resident: body.resident === true,
+					everyBeat: body.everyBeat === true,
 					body: body.body ?? "",
 				});
 				sendJson(res, 200, { ok: true, dir: r.dir, note: "下一拍装载即生效（引擎每拍现读 skills/）" });

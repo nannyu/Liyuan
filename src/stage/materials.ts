@@ -112,6 +112,8 @@ export interface SkillFile {
 	description: string;
 	/** 常驻档：正文随 system 送达（每拍都用的流程骨架）；拉取档走 skill_read */
 	resident: boolean;
+	/** 必定读取（每轮）：落笔前受理门强制先 skill_read（制造停顿=死磕燃料）；与 resident 互斥 */
+	everyBeat: boolean;
 	body: string;
 	/** 存储目录名（skills/<dir>/SKILL.md；编辑器按它定位文件，通常与 name 一致） */
 	dir?: string;
@@ -152,6 +154,7 @@ export function scanSkillFiles(cwd: string): SkillFile[] {
 			name,
 			description: description.slice(0, 1024),
 			resident: meta.get("resident") === "true",
+			everyBeat: meta.get("每轮") === "true",
 			body: rawLines.slice(endIdx + 1).join("\n").trim(),
 			dir: dir.name,
 		});
