@@ -1036,7 +1036,7 @@ test("五注入日程：进度行每轮替换、判定注入路标演完时一�
 		assert.ok(ctxs[1].includes("【进度】路标 1/2「推门」；已演 0 段，正文约 0 字。"), "进度行 = 事实（字数是续写的触发燃料，8/10 复核保留）");
 		assert.ok(ctxs[2].includes("【进度】路标 2/2「见人」；已演 1 段"), "进度行更新到当前路标");
 		assert.equal((ctxs[2].match(/【进度】/g) ?? []).length, 1, "替换语义：上下文里只有一条进度行");
-		assert.ok(ctxs[3].includes("【判定】路标已演完，正文约"), "判定注入在路标演完且稿非空时出现（字数事实随行）");
+		assert.ok(ctxs[3].includes("【判定】正文约"), "判定注入在路标演完且稿非空时出现（字数事实随行）");
 		assert.ok(ctxs[3].includes("的行动或选择，先 `ask` 再动笔"), "判定注入 = 契约文案（PLAN-ASK §2.1：ask 裁决句随行）");
 		assert.ok(ctxs[4].includes("【记账】已封笔。"), "seal 之后第一件事是记账注入");
 	} finally {
@@ -1076,7 +1076,7 @@ test("抢跑 seal 时序保证（PLAN-ASK §2.2）：路标演完同轮直接封
 		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"));
 		await engine.performTurn("你先进去。");
 
-		assert.ok(ctxs[2].includes("【判定】路标已演完，正文约"), "首次 seal 不受理——回执即判定文案（同一席位提前送达）");
+		assert.ok(ctxs[2].includes("【判定】正文约"), "首次 seal 不受理——回执即判定文案（同一席位提前送达）");
 		assert.ok(ctxs[2].includes("先 `ask` 再动笔"), "判定回执带 ask 裁决句");
 		assert.ok(!ctxs[2].includes("已封笔"), "首次 seal 未被受理");
 		assert.ok(ctxs[3].includes("已封笔"), "二次 seal 照常受理（一次性保证，不成循环）");
@@ -1113,7 +1113,88 @@ test("判定注入以稿非空为门（8/10）：0 字连勾不触发判定，�
 
 		assert.ok(!ctxs[2].includes("【判定】"), "0 字勾完不触发判定（勾选表演不推进日程）");
 		assert.ok(ctxs[2].includes("【进度】"), "继续进度行");
-		assert.ok(ctxs[3].includes("【判定】路标已演完，正文约"), "正文落地后判定出现");
+		assert.ok(ctxs[3].includes("【判定】正文约"), "正文落地后判定出现");
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("判定送达不依赖路标勾选（8/12 放宽）：没勾完路标就封笔被判定回执拦下，二次 seal 受理", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		const ctxs: string[] = [];
+		const cap = (r: unknown) => (ctx: { messages?: unknown[] }) => {
+			ctxs.push(JSON.stringify(ctx.messages ?? []));
+			return r;
+		};
+		reg.setResponses([
+			cap(fauxAssistantMessage([fauxToolCall("beat_plan", { steps: ["推门", "见人"] })], { stopReason: "toolUse" })),
+			// 实弹形态：只勾了第 1 条路标（勾 1/2）就直接封笔——判定席位从未送达
+			cap(
+				fauxAssistantMessage(
+					[
+						fauxToolCall("draft_append", { segment: "她推门进院。" }),
+						fauxToolCall("beat_step_done", { step: 1 }),
+						fauxToolCall("draft_seal", {}),
+					],
+					{ stopReason: "toolUse" },
+				),
+			),
+			// 判定回执已达；模型再次 seal → 照常受理（拦一次不拦第二次，防空转）
+			cap(fauxAssistantMessage([fauxToolCall("draft_seal", {})], { stopReason: "toolUse" })),
+			cap(fauxAssistantMessage("")), // 记账注入轮
+			fauxScribeEmpty(),
+		] as never);
+		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"));
+		await engine.performTurn("你先进去。");
+
+		assert.ok(ctxs[2].includes("【判定】正文约"), "没勾完路标直接封笔也被拦——回执即判定文案");
+		assert.ok(ctxs[2].includes("先 `ask` 再动笔"), "判定回执带 ask 裁决句");
+		assert.ok(!ctxs[2].includes("已封笔"), "首次 seal 未被受理（判定优先于封笔）");
+		assert.ok(ctxs[3].includes("已封笔"), "二次 seal 照常受理（一次性保证，不成循环）");
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("判定送达不依赖工具轮（8/12 补洞）：勾不齐路标就停手，兜底封笔前补判定", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		const ctxs: string[] = [];
+		const cap = (r: unknown) => (ctx: { messages?: unknown[] }) => {
+			ctxs.push(JSON.stringify(ctx.messages ?? []));
+			return r;
+		};
+		reg.setResponses([
+			cap(fauxAssistantMessage([fauxToolCall("beat_plan", { steps: ["推门", "见人"] })], { stopReason: "toolUse" })),
+			// 只勾了第 1 条（勾 1/2，allDone=false → 工具轮判定分支不触发），然后停手
+			cap(
+				fauxAssistantMessage(
+					[fauxToolCall("draft_append", { segment: "她推门进院。" }), fauxToolCall("beat_step_done", { step: 1 })],
+					{ stopReason: "toolUse" },
+				),
+			),
+			// 停手1：催封笔（appends>0 未封笔）
+			cap(fauxAssistantMessage("")),
+			// 停手2：催过仍停手 → 兜底封笔前补判定（工具轮判定分支跑不到，停手分支补）
+			cap(fauxAssistantMessage("")),
+			// 停手3：判定已送达 → 兜底封笔 → 记账 → 谢幕 → 收束
+			cap(fauxAssistantMessage("")),
+			fauxScribeEmpty(),
+		] as never);
+		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"));
+		await engine.performTurn("你先进去。");
+
+		assert.ok(ctxs[3].includes("已续写 1 段未封笔"), "停手1：催封笔");
+		assert.ok(ctxs[4].includes("【判定】正文约"), "停手2：兜底封笔前补判定");
+		assert.ok(ctxs[4].includes("先 `ask` 再动笔"), "补的判定带 ask 裁决句");
+		assert.equal((ctxs[4].match(/【判定】/g) ?? []).length, 1, "判定只补一次，不成循环");
+		const branch = sm.getBranch() as Array<{ type: string; message?: { role?: string; content?: unknown } }>;
+		assert.ok(JSON.stringify(branch).includes("她推门进院"), "正文在树上（兜底封笔正常收束）");
 	} finally {
 		reg.unregister();
 		rmSync(cwd, { recursive: true, force: true });
@@ -1193,6 +1274,9 @@ test("谢幕注入（§4.B）：卡定义状态栏 → 记账轮后注入合约�
 				[fauxToolCall("draft_append", { segment: "他推门进屋，炉火将熄。" })],
 				{ stopReason: "toolUse" },
 			),
+			// 首次 seal：路标没勾 → 判定回执拦下（8/12 放宽：判定送达不依赖路标勾选）
+			fauxAssistantMessage([fauxToolCall("draft_seal", {})], { stopReason: "toolUse" }),
+			// 二次 seal：照常受理 → seal 后工具轮注入记账
 			fauxAssistantMessage([fauxToolCall("draft_seal", {})], { stopReason: "toolUse" }),
 			// 记账轮：模型停手（没有变动）→ 日程推进到谢幕注入
 			fauxAssistantMessage([fauxThinking("这拍演完了。")]),
@@ -1244,6 +1328,8 @@ test("记账注入（§2.3）：seal 后席位保证；本拍已有落账（结�
 				[fauxToolCall("draft_append", { segment: "他推门进屋，炉火将熄。" })],
 				{ stopReason: "toolUse" },
 			),
+			// 首次 seal：路标没勾 → 判定回执拦下；二次 seal 照常受理 → 注入记账
+			fauxAssistantMessage([fauxToolCall("draft_seal", {})], { stopReason: "toolUse" }),
 			fauxAssistantMessage([fauxToolCall("draft_seal", {})], { stopReason: "toolUse" }),
 			// seal 之后第一件事：记账注入（捕获）；模型据此落账
 			(ctx) => {

@@ -329,11 +329,12 @@ export function progressLine(
 	return `【进度】${parts.join("；")}。${packs}`;
 }
 
-/** 判定注入：路标全部演完且稿非空时一次性——续写/ask/收笔归模型判断（字数事实随行；
- * ask 裁决句恢复 v1.3.0 实弹验证措辞，PLAN-ASK §2.1） */
+/** 判定注入：收笔前一次性（8/12 起不再依赖路标勾选）——续写/ask/收笔归模型判断
+ * （字数事实随行；8/12 删「路标已演完」半句：放宽到没勾完路标也送，路标进度由进度行
+ * 覆盖，判定注入不重复报；ask 裁决句恢复 v1.3.0 实弹验证措辞，PLAN-ASK §2.1） */
 export function verdictInjection(ws: TurnWorkspace, userName: string, wordRange?: { min: number; max: number }): string {
 	return (
-		`【判定】路标已演完，正文约 ${draftBodyCharsOf(ws)} 字${rangeNote(wordRange)}。` +
+		`【判定】正文约 ${draftBodyCharsOf(ws)} 字${rangeNote(wordRange)}。` +
 		`续写、\`ask\`、或 \`draft_seal\` 收笔——你判断；下文涉及 ${userName} 的行动或选择，先 \`ask\` 再动笔。`
 	);
 }
@@ -1038,17 +1039,25 @@ export class StageEngine {
 						sealNudged = true;
 						convo.push(nowMsg(`已续写 ${o.ws.appends} 段未封笔。写完就 draft_seal，没写完接着写。`));
 					} else {
-						// 兜底封笔（催告已给过/全量稿天然封笔）→ 记账 → 谢幕：停手不越站
-						if (!o.ws.sealed) runWriteTool(o.ws, o.wsDeps, "draft_seal", {});
-						if (!ledgerDone && !ledgerInjected && o.ws.patches.length === 0 && o.ws.panelWrites === 0) {
-							ledgerInjected = true;
-							convo.push(nowMsg(LEDGER_INJECTION));
-						} else if (o.curtain && !curtainInjected) {
-							ledgerDone = true;
-							curtainInjected = true;
-							convo.push(nowMsg(o.curtain));
+						// 停手分支补判定（8/12）：模型勾完路标后直接停手（不调 seal、不调工具），
+						// 工具轮判定分支只跑在模型还在调工具时，停手分支原先整个没有判定逻辑——
+						// ask 裁决席位同样消失。兜底封笔前补一次（verdictInjected 守卫防循环）。
+						if (!verdictInjected && o.ws.plan.length > 0 && draftBodyCharsOf(o.ws) > 0) {
+							verdictInjected = true;
+							convo.push(nowMsg(verdictInjection(o.ws, o.wsDeps.userName, o.wsDeps.rules.wordRange)));
 						} else {
-							break; // 日程走完：本拍收束
+							// 兜底封笔（催告已给过/全量稿天然封笔）→ 记账 → 谢幕：停手不越站
+							if (!o.ws.sealed) runWriteTool(o.ws, o.wsDeps, "draft_seal", {});
+							if (!ledgerDone && !ledgerInjected && o.ws.patches.length === 0 && o.ws.panelWrites === 0) {
+								ledgerInjected = true;
+								convo.push(nowMsg(LEDGER_INJECTION));
+							} else if (o.curtain && !curtainInjected) {
+								ledgerDone = true;
+								curtainInjected = true;
+								convo.push(nowMsg(o.curtain));
+							} else {
+								break; // 日程走完：本拍收束
+							}
 						}
 					}
 				} else {
@@ -1131,14 +1140,15 @@ export class StageEngine {
 							ok: true,
 						};
 					} else if (
-						// 抢跑 seal 时序保证（PLAN-ASK §2.2）：判定是唯一 ask 裁决席位，模型在路标演完的
-						// 同一轮直接封笔会整个跳过它（8/11 实弹）。首次抢跑不受理，回执即判定文案（同一
-						// 席位提前送达）；下一轮再调 seal 照常受理。无计划的分段拍与 harness 内部兜底封笔不走此分支。
+						// 抢跑 seal 时序保证（PLAN-ASK §2.2）：判定是唯一 ask 裁决席位，模型直接封笔会整个
+						// 跳过它（8/11 实弹）。首次抢跑不受理，回执即判定文案（同一席位提前送达）；下一轮再调
+						// seal 照常受理。8/12 放宽：不再要求路标全勾——模型没勾完就封笔同样会跳过判定
+						// （实弹：勾 2/3 直接封笔，判定整个消失），判定送达不该依赖模型自觉勾选。
+						// 无计划的分段拍与 harness 内部兜底封笔不走此分支。
 						name === "draft_seal" &&
 						!verdictInjected &&
 						!o.ws.sealed &&
 						o.ws.plan.length > 0 &&
-						o.ws.plan.every((s) => s.done) &&
 						draftBodyCharsOf(o.ws) > 0
 					) {
 						verdictInjected = true;
