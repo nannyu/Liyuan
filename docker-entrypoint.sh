@@ -38,6 +38,36 @@ mkdir -p "$CONFIG_DIR"
 seed_and_link liyuan.config.json /app/liyuan.config.example.json
 seed_and_link liyuan.agent.json  /app/liyuan.agent.example.json
 
+# 项目根单文件用户数据（运行时才生成、无 example）：软链进 config 卷持久化
+link_data_file() {
+  local name="$1"
+  local target="${CONFIG_DIR}/${name}"
+  if [[ -e "/app/${name}" && ! -L "/app/${name}" ]]; then
+    cp -f "/app/${name}" "$target" 2>/dev/null || true
+    rm -f "/app/${name}"
+  fi
+  ln -sfn "$target" "/app/${name}"
+}
+link_data_file liyuan.agent.meta.json
+link_data_file liyuan-preset.json
+link_data_file .liyuan-personas.json
+link_data_file .liyuan-mcp.json
+
+# .liyuan/ 下的用户数据文件（extensions/ 是源码、不碰）：软链进 config/.liyuan 持久化
+mkdir -p "${CONFIG_DIR}/.liyuan"
+link_liyuan_data() {
+  local name="$1"
+  local target="${CONFIG_DIR}/.liyuan/${name}"
+  if [[ -e "/app/.liyuan/${name}" && ! -L "/app/.liyuan/${name}" ]]; then
+    cp -f "/app/.liyuan/${name}" "$target" 2>/dev/null || true
+    rm -f "/app/.liyuan/${name}"
+  fi
+  ln -sfn "$target" "/app/.liyuan/${name}"
+}
+for f in access.json settings.json output-contract.json output-contract.gen.json output-contract.declared.json output-contract.declared.raw.txt preset-override.json; do
+  link_liyuan_data "$f"
+done
+
 # 角色卡/世界书目录挂空卷会遮住镜像自带的默认素材，首启补一份进去
 seed_assets() {
   local dir="$1" src="$2"
@@ -50,5 +80,6 @@ seed_assets() {
 }
 seed_assets /app/assets/cards     /app/assets/default/cards
 seed_assets /app/assets/lorebooks /app/assets/default/lorebooks
+seed_assets /app/skills           /app/assets/default/skills
 
 exec "$@"

@@ -9,7 +9,7 @@
  * 触发会话重载的写操作在流式中一律拒绝（409）。
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
@@ -127,6 +127,7 @@ import {
 	type McpServerConfig,
 } from "../src/mcp.ts";
 import { listSkills, saveSkill } from "../src/skills.ts";
+import { buildBackupZip, stageRestore } from "../src/backup.ts";
 import { DEFAULT_CONFIG, type LorebookEntry, type RpConfig } from "../src/types.ts";
 import { readJsonFile } from "../src/jsonio.ts";
 import { formatBytes, listMedia, listUploads, saveUpload } from "../src/uploads.ts";
@@ -304,6 +305,7 @@ export interface SessionSearchHit {
 
 const MAX_BODY = 32 * 1024 * 1024; // ST 聊天记录/预设上传上限 32MB
 const MAX_UPLOAD = 64 * 1024 * 1024; // 上传区文件上限 64MB
+const MAX_BACKUP_UPLOAD = 512 * 1024 * 1024; // 备份包上限（素材多，留裕量）
 
 function readBodyRaw(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
@@ -3504,9 +3506,28 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				if (fps.length === 0) throw new Error("缺少 fingerprint(s)");
 				const config = loadConfig(host.cwd);
 				const disabled = new Set(config.disabledLore ?? []);
+				// 启用方向：光摘 disabledLore 恢复不了源文件里本就 disabled 的条目（导入即关闭是常态），
+				// 必须把 enable 写回源文件——否则「启用」对这类条目是空操作。
+				const enableCandidates = body.enabled
+					? (() => {
+							const card = loadCardFile(resolvePath(host.cwd, config.card));
+							const paths = listLorebookFiles(host.cwd, config).map((b) => resolvePath(host.cwd, b.path));
+							paths.push(overlayPathFor(host.cwd, card.name));
+							return paths;
+						})()
+					: null;
 				for (const fp of fps) {
-					if (body.enabled) disabled.delete(fp);
-					else disabled.add(fp);
+					if (body.enabled) {
+						disabled.delete(fp);
+						if (enableCandidates) {
+							for (const abs of enableCandidates) {
+								if (!existsSync(abs)) continue;
+								if (patchLorebookFileEntry(abs, fp, { enabled: true })) break;
+							}
+						}
+					} else {
+						disabled.add(fp);
+					}
 				}
 				const next = { ...config, disabledLore: [...disabled] } as Record<string, unknown>;
 				if ((next.disabledLore as string[]).length === 0) delete next.disabledLore;
@@ -3712,6 +3733,59 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				if (refuseWhileStreaming()) return true;
 				sendJson(res, 200, { ok: true });
 				// 先回包再退：前端收到 ok 后展示「重启中」并等重连
+				host.updateRestart();
+				return true;
+			}
+
+			// ---- 项目完整备份 / 恢复 ----
+			case "POST /api/backup/create": {
+				if (refuseWhileStreaming()) return true;
+				const dir = join(host.cwd, ".liyuan-cache", "backup");
+				mkdirSync(dir, { recursive: true });
+				const name = `liyuan-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`;
+				const outPath = join(dir, name);
+				const r = buildBackupZip(host.cwd, host.agentDir(), outPath);
+				host.notify("info", `已在本机备份 ${r.count} 个文件（${formatBytes(r.bytes)}）`);
+				sendJson(res, 200, { ok: true, filename: name, files: r.count, bytes: r.bytes });
+				return true;
+			}
+			case "GET /api/backup/download": {
+				if (refuseWhileStreaming()) return true;
+				const dir = join(host.cwd, ".liyuan-cache", "backup");
+				mkdirSync(dir, { recursive: true });
+				const name = `liyuan-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`;
+				const outPath = join(dir, name);
+				buildBackupZip(host.cwd, host.agentDir(), outPath);
+				res.writeHead(200, {
+					"content-type": "application/zip",
+					"content-disposition": `attachment; filename="${name}"`,
+				});
+				createReadStream(outPath).pipe(res);
+				res.on("finish", () => {
+					try {
+						rmSync(outPath, { force: true });
+					} catch {
+						/* 清理临时导出失败无碍 */
+					}
+				});
+				return true;
+			}
+			case "POST /api/backup/import": {
+				if (refuseWhileStreaming()) return true;
+				const data = await readBodyRaw(req, MAX_BACKUP_UPLOAD);
+				if (data.length === 0) throw new Error("备份文件为空");
+				// 暂存 zip 放在 restore/ 的兄弟目录——stageRestore 会先清空 restore/，写进去会被自己删掉
+				const dir = join(host.cwd, ".liyuan-cache", "backup");
+				mkdirSync(dir, { recursive: true });
+				const zipPath = join(dir, "incoming.zip");
+				writeFileSync(zipPath, data);
+				const manifest = stageRestore(host.cwd, zipPath);
+				rmSync(zipPath, { force: true }); // 已解压进 restore/，暂存 zip 用完即删
+				// 先回包再退：前端收到 ok 后展示「重启中」
+				sendJson(res, 200, {
+					ok: true,
+					note: `恢复点已就绪（${manifest.fileCount} 个文件），正在重启应用以完成导入…`,
+				});
 				host.updateRestart();
 				return true;
 			}

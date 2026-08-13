@@ -116,6 +116,7 @@ import { registerAssistantRunner } from "../src/assistant-gateway.ts";
 import { sameCardPath } from "../src/paths.ts";
 import { toggleDisabledLore } from "../src/lorebook.ts";
 import { syncStoryPanelsFromDisk, syncStoryStateFromDisk } from "../src/story-sync.ts";
+import { applyPendingBackupRestore } from "../src/backup.ts";
 import { toolStartDetail } from "../src/activity-format.ts";
 import {
 	checkLatestRelease,
@@ -140,6 +141,11 @@ const newSessionFlag = process.argv.includes("--new");
 // 数据目录/配置文件：.rp-* → .liyuan-*，rp.config.json → liyuan.config.json
 for (const line of migrateLegacyLayout(cwd)) {
 	console.log(`[liyuan] 迁移 ${line}`);
+}
+
+// 待恢复备份（导入备份后重启触发）：在装载任何会话/素材之前精确铺回数据
+for (const line of applyPendingBackupRestore(cwd, agentHome)) {
+	console.log(`[liyuan] 恢复 ${line}`);
 }
 
 // 自操作接口（LIYUAN_HTTP → 剧情 system prompt）已退役（2026-07-14）：

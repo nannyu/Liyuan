@@ -16,6 +16,8 @@ RUN npm install --omit=dev --no-audit --no-fund \
 COPY server ./server
 COPY src ./src
 COPY assets ./assets
+COPY skills ./skills
+COPY presets ./presets
 COPY .liyuan/extensions ./.liyuan/extensions
 COPY liyuan.config.example.json liyuan.agent.example.json ./
 COPY start.sh docker-entrypoint.sh ./
@@ -31,7 +33,8 @@ RUN if [ ! -f web/dist/index.html ]; then \
 # entrypoint 首启时从这里补回默认角色卡/世界书
 RUN mkdir -p assets/default \
   && cp -r assets/cards assets/default/cards \
-  && cp -r assets/lorebooks assets/default/lorebooks
+  && cp -r assets/lorebooks assets/default/lorebooks \
+  && cp -r skills assets/default/skills
 
 # 配置真身放在 /app/config（卷挂载点），/app 下同名文件由 entrypoint 软链过去。
 # 不在这里 cp 出 liyuan.*.json：镜像内的真文件会和 compose 的目录挂载冲突（issue #1）。
@@ -46,7 +49,7 @@ EXPOSE 7620
 
 # Persist runtime dirs via anonymous volumes (sessions live under ~/.liyuan/agent by design)
 # /app/config 存 liyuan.config.json / liyuan.agent.json（含 API Key），重建镜像不丢
-VOLUME ["/root/.liyuan", "/app/config", "/app/.liyuan-state", "/app/.liyuan-uploads", "/app/.liyuan-media", "/app/.liyuan-audio", "/app/.liyuan-artifacts", "/app/.liyuan-codex", "/app/.liyuan-lore"]
+VOLUME ["/root/.liyuan", "/app/config", "/app/.liyuan-state", "/app/.liyuan-uploads", "/app/.liyuan-media", "/app/.liyuan-audio", "/app/.liyuan-artifacts", "/app/.liyuan-codex", "/app/.liyuan-lore", "/app/.liyuan-memory", "/app/.liyuan-skills", "/app/.liyuan-assistant", "/app/.liyuan-worldline", "/app/.liyuan-cache", "/app/assets/presets", "/app/assets/personas", "/app/liyuan-profiles", "/app/skills"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||7620)+'/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"

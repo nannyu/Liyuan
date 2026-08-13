@@ -5,9 +5,9 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { api, apiGet, apiPut, type RpConfigView } from "../api.ts";
+import { api, apiGet, apiPut, createBackup, downloadBackup, importBackup, type RpConfigView } from "../api.ts";
 import { getTheme, setTheme, type ThemeMode } from "../theme.ts";
-import { PanelStatus, SliderField, Toggle, useAction, usePanelData } from "./kit.tsx";
+import { ConfirmButton, PanelStatus, SliderField, Toggle, useAction, usePanelData } from "./kit.tsx";
 
 type MemoryStoreStats = {
 	id: string;
@@ -643,6 +643,76 @@ function AccessSection({ toast }: { toast: (level: "info" | "warning" | "error",
 	);
 }
 
+/** 项目完整备份：本机备份 / 导出下载 / 导入恢复（恢复覆盖当前项目，先留恢复前快照） */
+function BackupSection({ toast }: { toast: (level: "info" | "warning" | "error", text: string) => void }) {
+	const { busy, run } = useAction(toast);
+	const fileRef = useRef<HTMLInputElement>(null);
+	const [pendingFile, setPendingFile] = useState<File | null>(null);
+
+	const onBackup = () =>
+		run(async () => {
+			const r = await createBackup();
+			toast("info", `已在本机备份 ${r.files} 个文件（.liyuan-cache/backup/${r.filename}）`);
+		});
+
+	const onPickImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+		const f = e.target.files?.[0];
+		if (f) setPendingFile(f);
+		if (fileRef.current) fileRef.current.value = "";
+	};
+
+	const doImport = () =>
+		run(async () => {
+			if (!pendingFile) return;
+			const r = await importBackup(pendingFile);
+			setPendingFile(null);
+			toast("info", r.note || "已导入，正在重启应用…");
+		});
+
+	return (
+		<section className="sp-section">
+			<h4>备份与恢复</h4>
+			<div className="field-hint">
+				完整备份本项目的角色卡、世界书、预设、会话、向量记忆、面板、知识库、素材与配置（含 API
+				密钥与访问密码，请妥善保管）。恢复会<strong>整体覆盖</strong>当前项目，并自动先留一份恢复前快照。
+			</div>
+			<div className="access-actions" style={{ flexWrap: "wrap" }}>
+				<button type="button" className="drawer-btn" disabled={busy} onClick={onBackup}>
+					备份
+				</button>
+				<button type="button" className="drawer-btn" disabled={busy} onClick={() => downloadBackup()}>
+					导出
+				</button>
+				<button type="button" className="drawer-btn" disabled={busy} onClick={() => fileRef.current?.click()}>
+					导入
+				</button>
+				<input
+					ref={fileRef}
+					type="file"
+					accept=".zip,application/zip"
+					hidden
+					onChange={onPickImport}
+				/>
+			</div>
+			{pendingFile && (
+				<div className="memory-chunk-mgr" style={{ marginTop: 8 }}>
+					<div className="field-hint">
+						待导入：{pendingFile.name}（覆盖当前项目全部数据）
+					</div>
+					<div className="access-actions">
+						<ConfirmButton className="drawer-btn" disabled={busy} confirmText="确认覆盖当前项目" onConfirm={() => void doImport()}>
+							开始导入
+						</ConfirmButton>
+						<button type="button" className="drawer-btn" disabled={busy} onClick={() => setPendingFile(null)}>
+							取消
+						</button>
+					</div>
+				</div>
+			)}
+		</section>
+	);
+}
+
 export function SettingsPanel({ toast }: { toast: (level: "info" | "warning" | "error", text: string) => void }) {
 	const { data, error, loading, reload } = usePanelData(() => apiGet<{ config: RpConfigView }>("/api/config"), { cacheKey: "/api/config" });
 	const { busy, run } = useAction(toast);
@@ -701,6 +771,7 @@ export function SettingsPanel({ toast }: { toast: (level: "info" | "warning" | "
 				<div className="field-hint">白昼 / 黑夜立刻切换，偏好记在本机浏览器，与会话配置无关。</div>
 			</section>
 			<AccessSection toast={toast} />
+			<BackupSection toast={toast} />
 			<MemorySection toast={toast} />
 			{data && (
 				<>

@@ -53,6 +53,7 @@ function invalidateAfterWrite(writePath: string): void {
 		{ test: /^\/api\/models/, prefixes: ["/api/models", "/api/agent-config"] },
 		{ test: /^\/api\/channels/, prefixes: ["/api/models", "/api/agent-config", "/api/agent-profiles"] },
 		{ test: /^\/api\/config/, prefixes: ["/api/config"] },
+		{ test: /^\/api\/backup/, prefixes: [] },
 		{ test: /^\/api\/upload/, prefixes: ["/api/uploads"] },
 	];
 	let hit = false;
@@ -536,6 +537,31 @@ export const importCard = (file: File) =>
 			body: file,
 		},
 	);
+
+// ---------- 项目完整备份 / 恢复 ----------
+
+export const createBackup = () =>
+	api<{ ok: true; filename: string; files: number; bytes: number }>("/api/backup/create", {
+		method: "POST",
+		body: "{}",
+	});
+
+/** 导出备份包：走浏览器原生下载（携带访问 Cookie，服务器回 content-disposition） */
+export function downloadBackup(): void {
+	const a = document.createElement("a");
+	a.href = "/api/backup/download";
+	a.download = "";
+	document.body.appendChild(a);
+	a.click();
+	a.remove();
+}
+
+export const importBackup = (file: File) =>
+	api<{ ok: true; note?: string }>("/api/backup/import", {
+		method: "POST",
+		headers: { "content-type": "application/octet-stream" },
+		body: file,
+	});
 
 export function downloadJson(filename: string, data: unknown): void {
 	const blob = new Blob([JSON.stringify(data, null, "\t")], { type: "application/json" });
