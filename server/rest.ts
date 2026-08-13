@@ -125,6 +125,8 @@ import { listSkills, saveSkill } from "../src/skills.ts";
 import { DEFAULT_CONFIG, type LorebookEntry, type RpConfig } from "../src/types.ts";
 import { readJsonFile } from "../src/jsonio.ts";
 import { formatBytes, listMedia, listUploads, saveUpload } from "../src/uploads.ts";
+import { probeModelsEndpoint } from "./model-probe.ts";
+import type { OAuthLoginSnapshot } from "./oauth-login.ts";
 
 // ---------- 宿主接口（由 main.ts 实现；纯平面类型，pi 止步于 main） ----------
 
@@ -168,6 +170,12 @@ export interface AuthProviderInfo {
 	/** 环境变量名等提示（如 DEEPSEEK_API_KEY） */
 	label?: string;
 	modelCount: number;
+	/** provider 是否支持账号 OAuth（与 API key 可并存） */
+	oauth: boolean;
+	/** 当前落盘凭据的实际类型；不暴露凭据内容 */
+	credentialType?: "api_key" | "oauth";
+	/** Web 可发起的授权方式 */
+	oauthMethods?: Array<"browser" | "device_code">;
 }
 
 /** 运行时渠道快照（用于空配置时收编当前正在用的渠道） */
@@ -195,6 +203,10 @@ export interface RestHost {
 	authProviders(): AuthProviderInfo[];
 	setAuthKey(provider: string, key: string): void;
 	removeAuth(provider: string): void;
+	startOAuthLogin(provider: string, method?: string): Promise<OAuthLoginSnapshot>;
+	oauthLoginStatus(id: string): OAuthLoginSnapshot | null;
+	submitOAuthLogin(id: string, value: string): OAuthLoginSnapshot;
+	cancelOAuthLogin(id: string): OAuthLoginSnapshot;
 	/** runtime agent 目录（同步用，不对用户暴露） */
 	agentDir(): string;
 	/** 取某 provider 的运行时模型/端点快照 */
@@ -677,49 +689,6 @@ async function rebindCurrentModel(host: RestHost, config?: LiyuanAgentConfig): P
 		} catch {
 			/* 模型不认该档位名时忽略 */
 		}
-	}
-}
-
-function resolveProbeKey(apiKey?: string): string | undefined {
-	if (!apiKey || apiKey === "placeholder") return undefined;
-	if (apiKey.startsWith("$")) {
-		const name = apiKey.slice(1).replace(/^\{|\}$/g, "");
-		const v = process.env[name];
-		return v || undefined;
-	}
-	if (apiKey.startsWith("!")) return undefined; // 命令取 key：探测跳过
-	return apiKey;
-}
-
-async function probeModelsEndpoint(
-	baseUrl: string,
-	apiKey?: string,
-): Promise<{ ok: boolean; status: number; detail: string; ids: string[] }> {
-	const url = `${baseUrl.replace(/\/+$/, "")}/models`;
-	const headers: Record<string, string> = {};
-	const resolved = resolveProbeKey(apiKey);
-	if (resolved) headers.authorization = `Bearer ${resolved}`;
-	try {
-		const r = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
-		if (!r.ok) {
-			return { ok: false, status: r.status, detail: (await r.text()).slice(0, 300) || `HTTP ${r.status}`, ids: [] };
-		}
-		const json = (await r.json()) as {
-			data?: Array<{ id?: unknown; name?: unknown }>;
-			models?: Array<{ id?: unknown; name?: unknown }>;
-		};
-		const list = Array.isArray(json.data) ? json.data : Array.isArray(json.models) ? json.models : [];
-		const ids = list.map((m) => String(m.id ?? m.name ?? "").trim()).filter(Boolean);
-		return {
-			ok: true,
-			status: r.status,
-			detail: ids.length
-				? `连通（HTTP ${r.status}，${ids.length} 个模型）`
-				: `连通（HTTP ${r.status}，模型清单为空）`,
-			ids,
-		};
-	} catch (e) {
-		return { ok: false, status: 0, detail: e instanceof Error ? e.message : String(e), ids: [] };
 	}
 }
 
@@ -2450,6 +2419,35 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				sendJson(res, 200, { ok: true });
 				return true;
 			}
+			case "POST /api/auth/oauth/start": {
+				const body = JSON.parse(await readBody(req)) as { provider?: string; method?: string };
+				if (!body.provider) throw new Error("缺少 provider");
+				const login = await host.startOAuthLogin(body.provider, body.method);
+				sendJson(res, 200, { login });
+				return true;
+			}
+			case "GET /api/auth/oauth/status": {
+				const id = (query.get("id") ?? "").trim();
+				if (!id) throw new Error("缺少授权任务 id");
+				const login = host.oauthLoginStatus(id);
+				if (!login) throw new Error("授权任务不存在或已过期");
+				sendJson(res, 200, { login });
+				return true;
+			}
+			case "POST /api/auth/oauth/submit": {
+				const body = JSON.parse(await readBody(req)) as { id?: string; value?: string };
+				if (!body.id || typeof body.value !== "string") throw new Error("缺少授权任务 id 或授权信息");
+				const login = host.submitOAuthLogin(body.id, body.value);
+				sendJson(res, 200, { login });
+				return true;
+			}
+			case "POST /api/auth/oauth/cancel": {
+				const body = JSON.parse(await readBody(req)) as { id?: string };
+				if (!body.id) throw new Error("缺少授权任务 id");
+				const login = host.cancelOAuthLogin(body.id);
+				sendJson(res, 200, { login });
+				return true;
+			}
 			// ---- 配置仓库 liyuan-profiles/ + 当前启用 liyuan.agent.json ----
 			case "GET /api/agent-profiles": {
 				loadOrSeedAgentConfig(host); // 触发迁移
@@ -2754,21 +2752,23 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				return true;
 			}
 			case "POST /api/channels/test": {
-				const body = JSON.parse(await readBody(req)) as { name?: string; baseUrl?: string; apiKey?: string };
+				const body = JSON.parse(await readBody(req)) as { name?: string; baseUrl?: string; apiKey?: string; api?: string };
 				let baseUrl = (body.baseUrl ?? "").trim();
 				let apiKey = (body.apiKey ?? "").trim() || undefined;
+				let api = (body.api ?? "").trim() || undefined;
 				const name = (body.name ?? "").trim();
 				if (name) {
 					const ch = loadOrSeedAgentConfig(host).config.providers[name];
 					if (!ch?.baseUrl) throw new Error(`渠道不存在或缺 Base URL：${name}`);
 					baseUrl = String(ch.baseUrl);
+					if (!api && typeof ch.api === "string") api = ch.api;
 					if (!apiKey) {
 						const k = typeof ch.apiKey === "string" ? ch.apiKey : "";
 						if (k && k !== "placeholder") apiKey = k; // $ENV 由 probe 解析
 					}
 				}
 				if (!baseUrl) throw new Error("缺少 name 或 baseUrl");
-				const result = await probeModelsEndpoint(baseUrl, apiKey);
+				const result = await probeModelsEndpoint(baseUrl, apiKey, api);
 				sendJson(res, 200, { ok: result.ok, status: result.status, detail: result.detail });
 				return true;
 			}
@@ -2777,23 +2777,26 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					name?: string;
 					baseUrl?: string;
 					apiKey?: string;
+					api?: string;
 					apply?: boolean;
 				};
 				let baseUrl = (body.baseUrl ?? "").trim();
 				let apiKey = (body.apiKey ?? "").trim() || undefined;
+				let api = (body.api ?? "").trim() || undefined;
 				const name = (body.name ?? "").trim();
 				const loaded = name ? loadOrSeedAgentConfig(host) : null;
 				const ch = name && loaded ? loaded.config.providers[name] : undefined;
 				if (name) {
 					if (!ch?.baseUrl) throw new Error(`渠道不存在或缺 Base URL：${name}`);
 					baseUrl = String(ch.baseUrl);
+					if (!api && typeof ch.api === "string") api = ch.api;
 					if (!apiKey) {
 						const k = typeof ch.apiKey === "string" ? ch.apiKey : "";
 						if (k && k !== "placeholder") apiKey = k;
 					}
 				}
 				if (!baseUrl) throw new Error("缺少 name 或 baseUrl");
-				const result = await probeModelsEndpoint(baseUrl, apiKey);
+				const result = await probeModelsEndpoint(baseUrl, apiKey, api);
 				if (!result.ok) throw new Error(`拉取失败：${result.detail}`);
 				if (result.ids.length === 0) throw new Error("渠道返回了空模型清单");
 				const models = result.ids.map((id) => ({ id })) as AgentModelEntry[];

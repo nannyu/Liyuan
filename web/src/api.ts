@@ -51,6 +51,7 @@ function invalidateAfterWrite(writePath: string): void {
 		{ test: /^\/api\/memory/, prefixes: ["/api/memory"] },
 		{ test: /^\/api\/agent-/, prefixes: ["/api/agent-config", "/api/agent-profiles", "/api/models"] },
 		{ test: /^\/api\/models/, prefixes: ["/api/models", "/api/agent-config"] },
+		{ test: /^\/api\/auth/, prefixes: ["/api/auth", "/api/models"] },
 		{ test: /^\/api\/channels/, prefixes: ["/api/models", "/api/agent-config", "/api/agent-profiles"] },
 		{ test: /^\/api\/config/, prefixes: ["/api/config"] },
 		{ test: /^\/api\/upload/, prefixes: ["/api/uploads"] },
@@ -130,7 +131,7 @@ export function apiGetCacheClearForPanel(panelId: string): void {
 		codex: ["/api/codex"],
 		persona: ["/api/personas", "/api/config"],
 		preset: ["/api/preset", "/api/presets"],
-		connect: ["/api/models", "/api/agent-config", "/api/agent-profiles"],
+		connect: ["/api/models", "/api/auth", "/api/agent-config", "/api/agent-profiles"],
 		powers: ["/api/mcp", "/api/skills"],
 		settings: ["/api/config"],
 		// 媒体列表挂在 GET /api/uploads 的 media 字段，无独立 /api/media
@@ -165,6 +166,7 @@ export function prefetchPanelApis(): void {
 		"/api/skills",
 		"/api/mcp",
 		"/api/models",
+		"/api/auth",
 		"/api/agent-config",
 		"/api/agent-profiles",
 		"/api/uploads",
@@ -217,6 +219,28 @@ export interface AuthProviderInfo {
 	source?: string;
 	label?: string;
 	modelCount: number;
+	oauth: boolean;
+	credentialType?: "api_key" | "oauth";
+	oauthMethods?: Array<"browser" | "device_code">;
+}
+
+export interface OAuthLoginSnapshot {
+	id: string;
+	provider: string;
+	status: "starting" | "waiting" | "success" | "error" | "cancelled";
+	method?: string;
+	authUrl?: string;
+	instructions?: string;
+	deviceCode?: {
+		userCode: string;
+		verificationUri: string;
+		expiresInSeconds?: number;
+	};
+	prompt?: { message: string; placeholder?: string; allowEmpty?: boolean };
+	progress?: string;
+	error?: string;
+	startedAt: number;
+	updatedAt: number;
 }
 
 /** Agent 配置中的模型条目 */

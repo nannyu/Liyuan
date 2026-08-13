@@ -94,6 +94,7 @@ import {
 	onNarrativeTurnEnd,
 } from "../src/memory/index.ts";
 import { handleApiRequest, loadCardFrontSnapshot, type CurrentModelInfo, type RestHost } from "./rest.ts";
+import { OAuthLoginManager } from "./oauth-login.ts";
 
 // 用户级 agent 目录 → ~/.liyuan/agent（须在 getAgentDir / 建会话之前）
 // 并合并 fork 改名后遗留的 ~/.pi/agent（会话/配置，不覆盖更新的新树）
@@ -1012,6 +1013,13 @@ const currentModelInfo = (): CurrentModelInfo | null => {
 	};
 };
 
+const oauthLogins = new OAuthLoginManager(() => session.modelRegistry.authStorage, () => {
+	// OAuth 可能跨越 /new、/fork、/resume；当前会话的 AuthStorage 需从共享 auth.json 重读。
+	session.modelRegistry.authStorage.reload();
+	session.modelRegistry.refresh();
+	resyncAll();
+});
+
 const restHost: RestHost = {
 	cwd,
 	isStreaming: () => session.isStreaming,
@@ -1052,16 +1060,22 @@ const restHost: RestHost = {
 		}
 		// 当前会话模型所属 provider 置顶，便于在「现有渠道」里看见
 		const currentProvider = session.model?.provider;
+		const oauthProviders = new Map(oauthLogins.providers().map((provider) => [provider.id, provider]));
 		return [...counts.entries()]
 			.map(([provider, modelCount]) => {
 				const status = session.modelRegistry.getProviderAuthStatus(provider);
-				// pi：环境变量渠道 configured 恒 false，但 hasAuth 为真且模型可用
-				const ready = session.modelRegistry.authStorage.hasAuth(provider);
+				const stored = session.modelRegistry.authStorage.get(provider);
+				const oauth = oauthProviders.get(provider);
+				// 配置文件 key、环境变量、auth.json 与 runtime override 任一种可用即 ready。
+				const ready = status.configured || session.modelRegistry.authStorage.hasAuth(provider);
 				return {
 					provider,
 					displayName: session.modelRegistry.getProviderDisplayName(provider),
 					configured: status.configured,
 					ready,
+					oauth: !!oauth,
+					...(stored?.type ? { credentialType: stored.type } : {}),
+					...(oauth ? { oauthMethods: oauth.methods } : {}),
 					...(ready || status.configured
 						? {
 								source: status.configured ? status.source : "environment",
@@ -1087,6 +1101,10 @@ const restHost: RestHost = {
 	removeAuth(provider) {
 		session.modelRegistry.authStorage.remove(provider);
 	},
+	startOAuthLogin: (provider, method) => oauthLogins.start(provider, method),
+	oauthLoginStatus: (id) => oauthLogins.get(id),
+	submitOAuthLogin: (id, value) => oauthLogins.submit(id, value),
+	cancelOAuthLogin: (id) => oauthLogins.cancel(id),
 	agentDir: () => getAgentDir(),
 	providerSnapshot(provider) {
 		const all = session.modelRegistry.getAll().filter((m) => m.provider === provider);

@@ -5221,6 +5221,135 @@ input.panel-search.num {
 	flex-direction: column;
 	gap: 6px;
 }
+.conn-picker {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin-top: 10px;
+	padding-top: 10px;
+	border-top: 1px solid var(--hairline);
+}
+.conn-picker-tools {
+	display: grid;
+	grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+	gap: 6px;
+}
+.conn-pick-list {
+	max-height: min(480px, 56vh);
+	overflow-y: auto;
+}
+.conn-pick-provider {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 2px 3px;
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	color: var(--text-faint);
+	text-transform: uppercase;
+}
+.conn-auth-card {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 10px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-s);
+	background: var(--surface);
+}
+.conn-auth-status {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	padding: 8px;
+	border-radius: var(--radius-s);
+	background: var(--surface-dim);
+}
+.conn-auth-status.ready {
+	background: rgb(101 163 13 / 8%);
+}
+.conn-auth-name {
+	font-size: 12.5px;
+	font-weight: 600;
+	color: var(--text-strong);
+}
+.conn-auth-remove {
+	margin-left: auto;
+}
+.conn-auth-method,
+.conn-oauth-job {
+	display: flex;
+	flex-direction: column;
+	gap: 7px;
+	padding-top: 10px;
+	border-top: 1px solid var(--hairline);
+}
+.conn-auth-link {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: fit-content;
+	text-decoration: none;
+}
+.conn-auth-key-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.conn-auth-key-row .panel-search {
+	flex: 1;
+	min-width: 0;
+}
+.conn-oauth-job {
+	padding: 10px;
+	border: 1px solid var(--hairline-strong);
+	border-radius: var(--radius-s);
+	background: var(--surface-dim);
+}
+.conn-oauth-job.success {
+	border-color: rgb(101 163 13 / 35%);
+	background: rgb(101 163 13 / 8%);
+}
+.conn-oauth-job.error {
+	border-color: var(--accent-wash-strong);
+}
+.conn-oauth-job-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	font-size: 12.5px;
+}
+.conn-device-code {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 9px 10px;
+	border: 1px dashed var(--hairline-strong);
+	border-radius: var(--radius-s);
+	font-size: 12px;
+	color: var(--text-soft);
+}
+.conn-device-code code {
+	font-size: 18px;
+	font-weight: 700;
+	letter-spacing: 0.12em;
+	color: var(--text-strong);
+}
+.conn-oauth-input {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+@media (max-width: 520px) {
+	.conn-picker-tools {
+		grid-template-columns: 1fr;
+	}
+}
 
 /* 渠道展开体：使用 / 配置分区 */
 .conn-body {
