@@ -1,9 +1,9 @@
 /**
- * 连接面板 — 三层结构
+ * 连接面板 — 任务流结构
  *
- *  ① 当前生效：正在跑的模型 / 思考档（来自已启用配置）
- *  ② 配置仓库：保管生成的配置文件 — 启用 / 刷新 / 修改 / 删除
- *  ③ 配置生成器：只生成并存入仓库，绝不自动启用
+ *  ① 连接 Provider：账号 OAuth / API key
+ *  ② 同步并选择模型：上游实时目录 → 当前模型
+ *  ③ 高级配置：仓库与自定义渠道，默认收起
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -22,6 +22,7 @@ import {
 	type ModelsResponse,
 	type OAuthLoginSnapshot,
 } from "../api.ts";
+import { IconRefresh } from "./icons.tsx";
 import { ConfirmButton, Field, PanelStatus, useAction, usePanelData } from "./kit.tsx";
 
 const API_TYPES = [
@@ -83,6 +84,15 @@ interface Draft {
 	streaming: boolean;
 	/** 原 compat 里流式开关以外的字段（面板不管，保存时原样带回） */
 	compatRest: Record<string, unknown>;
+}
+
+interface ModelSyncResult {
+	provider: string;
+	count: number;
+	added: number;
+	removed: number;
+	retainedCurrent: boolean;
+	syncedAt: number;
 }
 
 function emptyDraft(): Draft {
@@ -469,13 +479,15 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 	const [discovered, setDiscovered] = useState<string[]>([]);
 	const [showAddModel, setShowAddModel] = useState(false);
 	const [newModelId, setNewModelId] = useState("");
-	const [authProvider, setAuthProvider] = useState("openai-codex");
+	const [authProvider, setAuthProvider] = useState("");
 	const [authKey, setAuthKey] = useState("");
-	const [oauthMethod, setOauthMethod] = useState<"browser" | "device_code">("browser");
+	const [authMode, setAuthMode] = useState<"oauth" | "api_key">("oauth");
+	const [oauthMethod, setOauthMethod] = useState<"browser" | "device_code">("device_code");
 	const [oauthLogin, setOauthLogin] = useState<OAuthLoginSnapshot | null>(null);
 	const [oauthInput, setOauthInput] = useState("");
-	const [modelProvider, setModelProvider] = useState("all");
 	const [modelSearch, setModelSearch] = useState("");
+	const [modelSync, setModelSync] = useState<ModelSyncResult | null>(null);
+	const [syncingModels, setSyncingModels] = useState(false);
 	/** 配置 JSON 预览：非 null 时表示用户在改 textarea，保存前需先应用或与 draft 合并 */
 	const [jsonOverride, setJsonOverride] = useState<string | null>(null);
 
@@ -484,11 +496,19 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 	const authProviders = authData.data?.providers ?? [];
 	const activeConfig: LiyuanAgentConfig = agentCfg.data?.config ?? { version: 1, providers: {} };
 	const profiles = profilesData.data?.profiles ?? [];
-	const selectedAuth = authProviders.find((provider) => provider.provider === authProvider) ?? authProviders[0] ?? null;
+	const selectedAuth =
+		authProviders.find((provider) => provider.provider === authProvider) ??
+		authProviders.find((provider) => provider.provider === current?.provider) ??
+		authProviders[0] ??
+		null;
 
 	useEffect(() => {
 		if (selectedAuth && selectedAuth.provider !== authProvider) setAuthProvider(selectedAuth.provider);
 	}, [authProvider, selectedAuth]);
+
+	useEffect(() => {
+		if (selectedAuth && !selectedAuth.oauth && authMode !== "api_key") setAuthMode("api_key");
+	}, [authMode, selectedAuth]);
 
 	/** 当前生效展示：优先配置文件（模型条目 > default），再回退会话，避免「配置 high、顶栏仍 off」 */
 	const liveThinking = (() => {
@@ -606,6 +626,28 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 			reloadAll();
 		}, `已移除 ${selectedAuth?.displayName ?? "provider"} 凭据`);
 
+	const refreshAvailableModels = async () => {
+		setSyncingModels(true);
+		try {
+			await run(async () => {
+				if (!selectedAuth) throw new Error("请选择 Provider");
+				if (!selectedAuth.ready) throw new Error("请先完成账号授权或保存 API key");
+				const result = await apiPost<ModelSyncResult>("/api/auth/models/refresh", {
+					provider: selectedAuth.provider,
+				});
+				setModelSync(result);
+				setModelSearch("");
+				reloadAll();
+				const delta = [result.added ? `新增 ${result.added}` : "", result.removed ? `移除 ${result.removed}` : ""]
+					.filter(Boolean)
+					.join("，");
+				toast("info", `已同步 ${result.count} 个可用模型${delta ? `（${delta}）` : ""}`);
+			});
+		} finally {
+			setSyncingModels(false);
+		}
+	};
+
 	const startOAuth = () =>
 		run(async () => {
 			if (!selectedAuth?.oauth) throw new Error("该 provider 不支持 OAuth");
@@ -655,7 +697,7 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 					stopped = true;
 					window.clearInterval(timer);
 					reloadAll();
-					toast("info", "账号授权完成，模型目录已刷新");
+					toast("info", "账号授权完成，现在可以同步可用模型");
 				} else if (result.login.status === "error" || result.login.status === "cancelled") {
 					stopped = true;
 					window.clearInterval(timer);
@@ -887,7 +929,7 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 				api: draft.api.trim() || undefined,
 			});
 			setDiscovered(r.models);
-			setProbe({ ok: true, detail: `检查到 ${r.models.length} 个模型（点 ＋ 加入已选）` });
+			setProbe({ ok: true, detail: `拉取到 ${r.models.length} 个模型（点 ＋ 加入已选）` });
 		});
 
 	const addModelById = (id: string) => {
@@ -910,17 +952,12 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 
 	const genPreview = useMemo(() => draftToConfig(draft), [draft]);
 
-	const modelProviders = [...new Set(allModels.map((model) => model.provider))].sort((a, b) => {
-		if (a === current?.provider) return -1;
-		if (b === current?.provider) return 1;
-		return a.localeCompare(b);
-	});
+	const selectedModels = selectedAuth ? allModels.filter((model) => model.provider === selectedAuth.provider) : [];
 	const visibleModels = allModels.filter((model) => {
-		if (modelProvider !== "all" && model.provider !== modelProvider) return false;
+		if (!selectedAuth || model.provider !== selectedAuth.provider) return false;
 		const q = modelSearch.trim().toLowerCase();
 		return !q || `${model.provider} ${model.id} ${model.name}`.toLowerCase().includes(q);
 	});
-	const modelsOfProvider = (provider: string) => visibleModels.filter((model) => model.provider === provider);
 
 	const renderEditor = (isGen: boolean) => (
 		<div className="conn-body">
@@ -990,7 +1027,7 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 						测试连通
 					</button>
 					<button type="button" className="drawer-btn" disabled={busy || !draft.baseUrl.trim()} onClick={() => void checkModels()}>
-						检查模型
+						从上游拉取
 					</button>
 				</div>
 				<StatusLine status={probe} />
@@ -1025,7 +1062,7 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 						<span className="field-hint">每个模型单独设置思考档、上下文窗口与最大回复</span>
 					</div>
 					{draft.models.length === 0 ? (
-						<div className="sp-empty">检查模型后点 ＋，或手填</div>
+						<div className="sp-empty">从上游拉取后点 ＋，或手填</div>
 					) : (
 						<ul className="conn-model-list">
 							{draft.models.map((m) => (
@@ -1264,13 +1301,13 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 
 	return (
 		<div className="panel-body conn-panel">
-			{/* ① 当前生效：模型 + 思考 + 切换列表（唯一选型入口） */}
-			<section className="sp-section conn-block">
-				<div className="conn-section-label">当前生效</div>
+			{/* 当前模型只展示摘要；低频参数折叠，避免抢占主流程。 */}
+			<section className="conn-current-hero">
+				<div className="conn-eyebrow">正在使用</div>
 				<PanelStatus loading={modelsData.loading} error={modelsData.error} hasData={!!modelsData.data} />
 				{current ? (
 					<>
-						<div className="connect-current">
+						<div className="connect-current conn-current-summary">
 							<span className="auth-dot ok" />
 							<div className="connect-current-info">
 								<div className="model-current">{current.name}</div>
@@ -1281,103 +1318,60 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 								</div>
 							</div>
 						</div>
-						<ThinkingInput
-							value={liveThinking || current.thinkingLevel}
-							hints={current.availableLevels}
-							busy={busy}
-							onCommit={(lv) => void setThinking(lv)}
-						/>
-						<ContextWindowInput value={liveContext} busy={busy} onCommit={(n) => void setContextWindow(n)} />
-						<MaxTokensInput value={liveMaxTokens} busy={busy} onCommit={(n) => void setMaxTokens(n)} />
-						<StreamingInput value={liveStreaming} busy={busy} onCommit={(on) => void setStreaming(on)} />
+						<details className="conn-tuning">
+							<summary>
+								<span>模型参数</span>
+								<small>思考档、窗口与输出</small>
+							</summary>
+							<div className="conn-tuning-body">
+								<ThinkingInput
+									value={liveThinking || current.thinkingLevel}
+									hints={current.availableLevels}
+									busy={busy}
+									onCommit={(lv) => void setThinking(lv)}
+								/>
+								<ContextWindowInput value={liveContext} busy={busy} onCommit={(n) => void setContextWindow(n)} />
+								<MaxTokensInput value={liveMaxTokens} busy={busy} onCommit={(n) => void setMaxTokens(n)} />
+								<StreamingInput value={liveStreaming} busy={busy} onCommit={(on) => void setStreaming(on)} />
+							</div>
+						</details>
 					</>
 				) : (
-					!modelsData.loading && <div className="sp-empty">尚未选择模型 — 先连接 provider，再从下方点选</div>
-				)}
-				{modelProviders.length > 0 && (
-					<div className="conn-picker">
-						<div className="conn-picker-tools">
-							<select className="panel-search" value={modelProvider} onChange={(e) => setModelProvider(e.target.value)}>
-								<option value="all">全部 provider</option>
-								{modelProviders.map((provider) => (
-									<option key={provider} value={provider}>
-										{allModels.find((model) => model.provider === provider)?.providerName ?? provider}
-									</option>
-								))}
-							</select>
-							<input
-								className="panel-search"
-								value={modelSearch}
-								placeholder="搜索模型"
-								onChange={(e) => setModelSearch(e.target.value)}
-							/>
-						</div>
-						{visibleModels.length === 0 ? (
-							<div className="sp-empty">没有匹配的模型</div>
-						) : (
-							<ul className="conn-pick-list">
-								{modelProviders.flatMap((provider) => {
-									const providerModels = modelsOfProvider(provider);
-									if (providerModels.length === 0) return [];
-									const providerName = providerModels[0]?.providerName ?? provider;
-									return [
-										<li key={`provider:${provider}`} className="conn-pick-provider">
-											<span>{providerName}</span>
-											<span>{providerModels.length}</span>
-										</li>,
-										...providerModels.map((m) => {
-											const on = current?.provider === m.provider && current.id === m.id;
-											const think = modelThinkingOf(activeConfig, m.provider, m.id);
-											const ctx = modelContextOf(activeConfig, m.provider, m.id) ?? m.contextWindow;
-											const maxOut = modelMaxTokensOf(activeConfig, m.provider, m.id);
-											return (
-												<li key={`${m.provider}/${m.id}`}>
-													<button
-														type="button"
-														className={`conn-pick-model ${on ? "on" : ""}`}
-														disabled={busy || on}
-														onClick={() => void selectModel(m)}
-													>
-														<span className="conn-pick-name">{m.name}</span>
-														<span className="conn-pick-meta">
-															{on && <span className="chip chip-cap">使用中</span>}
-															{think ? <span className="chip chip-cap">{think}</span> : null}
-															{ctx > 0 ? <span className="chip chip-cap">{fmtCtx(ctx)}</span> : null}
-															{maxOut ? <span className="chip chip-cap">出{fmtCtx(maxOut)}</span> : null}
-														</span>
-													</button>
-												</li>
-											);
-										}),
-									];
-								})}
-							</ul>
-						)}
-					</div>
+					!modelsData.loading && <div className="sp-empty">尚未选择模型，请按下面两步完成连接。</div>
 				)}
 			</section>
 
-			{/* ② Provider 凭据：API key 与账号 OAuth 分开，OAuth 任务只暴露状态、不回显 token */}
-			<section className="sp-section conn-block">
-				<div className="conn-section-label">Provider 与授权</div>
+			{/* ① 连接 Provider */}
+			<section className="conn-flow-card">
+				<div className="conn-step-head">
+					<span className="conn-step-index">1</span>
+					<div>
+						<div className="conn-step-title">连接 Provider</div>
+						<div className="conn-step-copy">选择服务，并完成一种认证方式</div>
+					</div>
+				</div>
 				<PanelStatus loading={authData.loading} error={authData.error} hasData={!!authData.data} />
 				{selectedAuth ? (
-					<div className="conn-auth-card">
-						<Field label="Provider" hint={`${selectedAuth.modelCount} 个内置模型；授权后会出现在上方模型目录`}>
+					<div className="conn-auth-stack">
+						<Field label="Provider" hint={`${selectedAuth.provider} · 当前目录 ${selectedAuth.modelCount} 个模型`}>
 							<select
 								className="panel-search"
 								value={selectedAuth.provider}
 								disabled={!!oauthLogin && (oauthLogin.status === "starting" || oauthLogin.status === "waiting")}
 								onChange={(e) => {
+									const provider = authProviders.find((item) => item.provider === e.target.value);
 									setAuthProvider(e.target.value);
 									setAuthKey("");
 									setOauthLogin(null);
-									setOauthMethod("browser");
+									setOauthMethod(provider?.oauthMethods?.includes("device_code") ? "device_code" : "browser");
+									setAuthMode(provider?.oauth ? "oauth" : "api_key");
+									setModelSearch("");
+									setModelSync(null);
 								}}
 							>
 								{authProviders.map((provider) => (
 									<option key={provider.provider} value={provider.provider}>
-										{provider.displayName} · {provider.provider}
+										{provider.ready ? "已连接 · " : ""}{provider.displayName}
 									</option>
 								))}
 							</select>
@@ -1406,10 +1400,21 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 							)}
 						</div>
 
-						{selectedAuth.oauth && (
-							<div className="conn-auth-method">
-								<div className="conn-sec-title">
-									{selectedAuth.provider === "openai-codex" ? "OpenAI 账号授权（ChatGPT Plus / Pro）" : "账号 OAuth"}
+						<div className="conn-auth-tabs" role="tablist" aria-label="认证方式">
+							{selectedAuth.oauth && (
+								<button type="button" className={authMode === "oauth" ? "on" : ""} aria-pressed={authMode === "oauth"} onClick={() => setAuthMode("oauth")}>
+									账号授权
+								</button>
+							)}
+							<button type="button" className={authMode === "api_key" ? "on" : ""} aria-pressed={authMode === "api_key"} onClick={() => setAuthMode("api_key")}>
+								API key
+							</button>
+						</div>
+
+						{selectedAuth.oauth && authMode === "oauth" && (
+							<div className="conn-auth-pane">
+								<div className="conn-pane-heading">
+									{selectedAuth.provider === "openai-codex" ? "使用 ChatGPT Plus / Pro 登录" : "使用账号 OAuth 登录"}
 								</div>
 								{(selectedAuth.oauthMethods?.length ?? 0) > 1 && (
 									<select className="panel-search" value={oauthMethod} onChange={(e) => setOauthMethod(e.target.value as "browser" | "device_code")}>
@@ -1425,7 +1430,7 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 								>
 									{selectedAuth.ready && selectedAuth.credentialType === "oauth" ? "重新授权" : "开始账号授权"}
 								</button>
-								<div className="field-hint">授权凭据保存到本机 auth.json；界面与接口不会回显 token。</div>
+								<div className="field-hint">远程或 Docker 环境推荐设备码；凭据不会在界面回显。</div>
 							</div>
 						)}
 
@@ -1483,31 +1488,112 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 							</div>
 						)}
 
-						<div className="conn-auth-method">
-							<div className="conn-sec-title">API key / Token</div>
-							<div className="conn-auth-key-row">
-								<input
-									className="panel-search"
-									type="password"
-									autoComplete="off"
-									value={authKey}
-									placeholder="粘贴后保存（不会回显）"
-									onChange={(e) => setAuthKey(e.target.value)}
-								/>
-								<button type="button" className="drawer-btn" disabled={busy || !authKey.trim()} onClick={() => void saveProviderKey()}>
-									保存
-								</button>
+						{authMode === "api_key" && (
+							<div className="conn-auth-pane">
+								<div className="conn-pane-heading">使用 API key / Token</div>
+								<div className="conn-auth-key-row">
+									<input
+										className="panel-search"
+										type="password"
+										autoComplete="off"
+										value={authKey}
+										placeholder="粘贴后保存（不会回显）"
+										onChange={(e) => setAuthKey(e.target.value)}
+									/>
+									<button type="button" className="drawer-btn" disabled={busy || !authKey.trim()} onClick={() => void saveProviderKey()}>
+										保存
+									</button>
+								</div>
+								<div className="field-hint">保存到服务器 auth.json，密钥不会回显。</div>
 							</div>
-						</div>
+						)}
 					</div>
 				) : (
 					!authData.loading && <div className="sp-empty">没有可配置的 provider</div>
 				)}
 			</section>
 
-			{/* ③ 配置仓库：名 + 右侧 启用|刷新 / 修改 / 删除；点击行展开修改 */}
-			<section className="sp-section conn-block">
-				<div className="conn-section-label">配置仓库</div>
+			{/* ② 认证后从上游同步目录，再在同一处选择模型。 */}
+			<section className="conn-flow-card">
+				<div className="conn-step-head">
+					<span className="conn-step-index">2</span>
+					<div>
+						<div className="conn-step-title">同步并选择模型</div>
+						<div className="conn-step-copy">从服务商读取当前账号真正可用的目录</div>
+					</div>
+				</div>
+				<div className="conn-catalog-toolbar">
+					<div className="conn-catalog-count">
+						<strong>{selectedAuth?.displayName ?? "未选择 Provider"}</strong>
+						<span>{selectedModels.length} 个模型</span>
+					</div>
+					<button
+						type="button"
+						className={`drawer-btn conn-sync-btn ${syncingModels ? "is-loading" : ""}`}
+						disabled={busy || !selectedAuth?.ready}
+						onClick={() => void refreshAvailableModels()}
+					>
+						<IconRefresh size={14} />
+						{syncingModels ? "同步中…" : "同步可用模型"}
+					</button>
+				</div>
+				{!selectedAuth?.ready && <div className="conn-flow-note">完成上一步连接后即可同步，不再依赖内置旧目录。</div>}
+				{modelSync && modelSync.provider === selectedAuth?.provider && (
+					<div className="conn-sync-result" role="status">
+						<span>已同步 {modelSync.count} 个</span>
+						<span>
+							{modelSync.added ? `新增 ${modelSync.added}` : "无新增"}
+							{modelSync.removed ? ` · 移除 ${modelSync.removed}` : ""}
+							{modelSync.retainedCurrent ? " · 已保留当前模型" : ""}
+						</span>
+					</div>
+				)}
+				<input
+					className="panel-search conn-model-search"
+					value={modelSearch}
+					placeholder="搜索模型名称或 ID"
+					disabled={selectedModels.length === 0}
+					onChange={(e) => setModelSearch(e.target.value)}
+				/>
+				{visibleModels.length === 0 ? (
+					<div className="conn-catalog-empty">
+						{selectedModels.length > 0 ? "没有匹配的模型" : selectedAuth?.ready ? "点击“同步可用模型”获取最新目录" : "连接 Provider 后获取模型目录"}
+					</div>
+				) : (
+					<ul className="conn-pick-list conn-catalog-list">
+						{visibleModels.map((m) => {
+							const on = current?.provider === m.provider && current.id === m.id;
+							const think = modelThinkingOf(activeConfig, m.provider, m.id);
+							const ctx = modelContextOf(activeConfig, m.provider, m.id) ?? m.contextWindow;
+							const maxOut = modelMaxTokensOf(activeConfig, m.provider, m.id);
+							return (
+								<li key={`${m.provider}/${m.id}`}>
+									<button type="button" className={`conn-pick-model ${on ? "on" : ""}`} disabled={busy || on} onClick={() => void selectModel(m)}>
+										<span className="conn-pick-name">{m.name}</span>
+										{m.name !== m.id && <span className="conn-pick-id">{m.id}</span>}
+										<span className="conn-pick-meta">
+											{on && <span className="chip chip-cap">使用中</span>}
+											{think ? <span className="chip chip-cap">思考 {think}</span> : null}
+											{ctx > 0 ? <span className="chip chip-cap">窗口 {fmtCtx(ctx)}</span> : null}
+											{maxOut ? <span className="chip chip-cap">回复 {fmtCtx(maxOut)}</span> : null}
+										</span>
+									</button>
+								</li>
+							);
+						})}
+					</ul>
+				)}
+			</section>
+
+			<details className="conn-advanced" open={mode !== null ? true : undefined}>
+				<summary>
+					<span>高级配置</span>
+					<small>配置仓库与自定义 Provider</small>
+				</summary>
+				<div className="conn-advanced-body">
+					{/* ③ 配置仓库：名 + 右侧 启用|刷新 / 修改 / 删除；点击行展开修改 */}
+					<section className="sp-section conn-block">
+						<div className="conn-section-label">配置仓库</div>
 				<PanelStatus loading={profilesData.loading} error={profilesData.error} hasData={!!profilesData.data} />
 				{profiles.length === 0 && <div className="sp-empty">仓库为空 — 用下方生成器创建</div>}
 				{profiles.map((p) => {
@@ -1580,6 +1666,8 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 					</button>
 				)}
 			</section>
+				</div>
+			</details>
 
 			<datalist id="conn-url-hist">
 				{loadUrlHist().map((u) => (

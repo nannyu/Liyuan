@@ -1101,6 +1101,7 @@ const restHost: RestHost = {
 	removeAuth(provider) {
 		session.modelRegistry.authStorage.remove(provider);
 	},
+	resolveProviderApiKey: (provider) => session.modelRegistry.getApiKeyForProvider(provider),
 	startOAuthLogin: (provider, method) => oauthLogins.start(provider, method),
 	oauthLoginStatus: (id) => oauthLogins.get(id),
 	submitOAuthLogin: (id, value) => oauthLogins.submit(id, value),

@@ -203,6 +203,7 @@ export interface RestHost {
 	authProviders(): AuthProviderInfo[];
 	setAuthKey(provider: string, key: string): void;
 	removeAuth(provider: string): void;
+	resolveProviderApiKey(provider: string): Promise<string | undefined>;
 	startOAuthLogin(provider: string, method?: string): Promise<OAuthLoginSnapshot>;
 	oauthLoginStatus(id: string): OAuthLoginSnapshot | null;
 	submitOAuthLogin(id: string, value: string): OAuthLoginSnapshot;
@@ -2417,6 +2418,94 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				host.removeAuth(provider);
 				host.refreshModels();
 				sendJson(res, 200, { ok: true });
+				return true;
+			}
+			case "POST /api/auth/models/refresh": {
+				if (refuseWhileStreaming()) return true;
+				const body = JSON.parse(await readBody(req)) as { provider?: string };
+				const provider = (body.provider ?? "").trim();
+				if (!provider) throw new Error("缺少 provider");
+
+				const snapshot = host.providerSnapshot(provider);
+				if (!snapshot?.baseUrl) throw new Error(`Provider「${provider}」没有可探测的模型端点`);
+				const loaded = loadOrSeedAgentConfig(host);
+				const previous = loaded.config.providers[provider];
+				const baseUrl = typeof previous?.baseUrl === "string" && previous.baseUrl.trim() ? previous.baseUrl : snapshot.baseUrl;
+				const api = typeof previous?.api === "string" && previous.api.trim() ? previous.api : snapshot.api;
+				const apiKey = await host.resolveProviderApiKey(provider);
+				const result = await probeModelsEndpoint(baseUrl, apiKey, api);
+				if (!result.ok) throw new Error(`模型同步失败：${result.detail}`);
+				if (result.models.length === 0) throw new Error("Provider 没有返回可用模型；已保留当前目录");
+
+				const previousModels = normalizeModels(previous?.models);
+				const previousById = new Map(previousModels.map((model) => [model.id, model]));
+				const nextModels: AgentModelEntry[] = result.models.map((model) => {
+					const fresh: AgentModelEntry = {
+						id: model.id,
+						...(model.name ? { name: model.name } : {}),
+						...(model.reasoning !== undefined ? { reasoning: model.reasoning } : {}),
+						...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+						...(model.maxTokens ? { maxTokens: model.maxTokens } : {}),
+						...(model.input ? { input: model.input } : {}),
+					};
+					const old = previousById.get(model.id);
+					return old ? { ...fresh, ...old, id: model.id } : fresh;
+				});
+
+				const current = host.listModels().current;
+				let retainedCurrent = false;
+				if (current?.provider === provider && !nextModels.some((model) => model.id === current.id)) {
+					retainedCurrent = true;
+					nextModels.push(
+						previousById.get(current.id) ?? {
+							id: current.id,
+							name: current.name,
+							contextWindow: current.contextWindow,
+							...(current.maxTokens ? { maxTokens: current.maxTokens } : {}),
+						},
+					);
+				}
+
+				const baseProvider =
+					previous ??
+					seedProviderFromRuntime({
+						provider,
+						baseUrl: snapshot.baseUrl,
+						api: snapshot.api,
+						models: snapshot.models,
+					});
+				const config: LiyuanAgentConfig = {
+					...loaded.config,
+					providers: {
+						...loaded.config.providers,
+						[provider]: {
+							...baseProvider,
+							baseUrl,
+							...(api ? { api } : {}),
+							models: nextModels,
+						},
+					},
+				};
+				const persisted = persistAgentConfig(host, config);
+				const active = listProfiles(host.cwd).find((profile) => profile.active);
+				if (active) saveProfile(host.cwd, active.id, active.name, persisted);
+				await rebindCurrentModel(host, persisted);
+
+				const nextIds = new Set(nextModels.map((model) => model.id));
+				const previousIds = new Set(previousModels.map((model) => model.id));
+				const added = [...nextIds].filter((id) => !previousIds.has(id)).length;
+				const removed = [...previousIds].filter((id) => !nextIds.has(id)).length;
+				host.notify("info", `「${provider}」已同步 ${result.models.length} 个可用模型`);
+				sendJson(res, 200, {
+					ok: true,
+					provider,
+					count: result.models.length,
+					added,
+					removed,
+					retainedCurrent,
+					models: host.listModels().models.filter((model) => model.provider === provider),
+					syncedAt: Date.now(),
+				});
 				return true;
 			}
 			case "POST /api/auth/oauth/start": {

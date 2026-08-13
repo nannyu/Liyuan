@@ -62,12 +62,70 @@ test("模型探测：Google 使用 x-goog-api-key 并规范化 models/ 前缀", 
 			assert.equal(req.headers["x-goog-api-key"], "google-key");
 			assert.equal(req.headers.authorization, undefined);
 			res.writeHead(200, { "content-type": "application/json" });
-			res.end(JSON.stringify({ models: [{ name: "models/gemini-test" }] }));
+			res.end(
+				JSON.stringify({
+					models: [
+						{ name: "models/gemini-test", displayName: "Gemini Test", supportedGenerationMethods: ["generateContent"] },
+						{ name: "models/embedding-test", supportedGenerationMethods: ["embedContent"] },
+					],
+				}),
+			);
 		},
 		async (baseUrl) => {
 			const result = await probeModelsEndpoint(`${baseUrl}/v1beta`, "google-key", "google-generative-ai");
 			assert.equal(result.ok, true);
 			assert.deepEqual(result.ids, ["gemini-test"]);
+			assert.equal(result.models[0]?.name, "Gemini Test");
+		},
+	);
+});
+
+test("模型探测：OpenAI Codex OAuth 使用 manifest 端点并提取最新可见模型", async () => {
+	const payload = Buffer.from(
+		JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-test" } }),
+	).toString("base64url");
+	const accessToken = `header.${payload}.signature`;
+
+	await withServer(
+		(req, res) => {
+			const url = new URL(req.url ?? "", "http://localhost");
+			assert.equal(url.pathname, "/backend-api/codex/models");
+			assert.ok(url.searchParams.get("client_version"));
+			assert.equal(req.headers.authorization, `Bearer ${accessToken}`);
+			assert.equal(req.headers["chatgpt-account-id"], "account-test");
+			assert.equal(req.headers.originator, "codex_cli_rs");
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(
+				JSON.stringify({
+					models: [
+						{
+							slug: "gpt-5.6-sol",
+							display_name: "GPT-5.6-Sol",
+							visibility: "list",
+							supported_in_api: true,
+							supported_reasoning_efforts: [{ reasoning_effort: "high" }],
+							input_modalities: ["text", "image"],
+							context_window: 400_000,
+							max_output_tokens: 128_000,
+						},
+						{ slug: "hidden-model", visibility: "hide", supported_in_api: true },
+						{ slug: "unsupported-model", visibility: "list", supported_in_api: false },
+					],
+				}),
+			);
+		},
+		async (baseUrl) => {
+			const result = await probeModelsEndpoint(`${baseUrl}/backend-api`, accessToken, "openai-codex-responses");
+			assert.equal(result.ok, true);
+			assert.deepEqual(result.ids, ["gpt-5.6-sol"]);
+			assert.deepEqual(result.models[0], {
+				id: "gpt-5.6-sol",
+				name: "GPT-5.6-Sol",
+				reasoning: true,
+				contextWindow: 400_000,
+				maxTokens: 128_000,
+				input: ["text", "image"],
+			});
 		},
 	);
 });
