@@ -95,6 +95,7 @@ import {
 } from "../src/memory/index.ts";
 import { handleApiRequest, loadCardFrontSnapshot, type CurrentModelInfo, type RestHost } from "./rest.ts";
 import { OAuthLoginManager } from "./oauth-login.ts";
+import { TurnJobManager } from "./turn-jobs.ts";
 
 // 用户级 agent 目录 → ~/.liyuan/agent（须在 getAgentDir / 建会话之前）
 // 并合并 fork 改名后遗留的 ~/.pi/agent（会话/配置，不覆盖更新的新树）
@@ -211,6 +212,8 @@ const runtime = await createAgentSessionRuntime(createRuntime, {
 
 let session: AgentSession = runtime.session;
 let unsubscribe: (() => void) | undefined;
+/** 浏览器之外的剧情任务所有者；StageEngine 建好后注入 runner。 */
+let turnJobs: TurnJobManager | null = null;
 
 // ---------- WS 广播 ----------
 
@@ -535,6 +538,7 @@ const branchMessages = (): unknown[] => {
 
 const helloFrame = (): ServerFrame => {
 	const cardfront = loadCardFrontSnapshot(cwd);
+	const activeTurn = turnJobs?.latestForSession(session.sessionId) ?? undefined;
 	const skin =
 		cardfront.enabled && cardfront.hasSkin && cardfront.rules.length
 			? {
@@ -552,6 +556,7 @@ const helloFrame = (): ServerFrame => {
 		state: currentState(),
 		stats: safeStats(),
 		panels: currentPanels(),
+		...(activeTurn ? { activeTurn } : {}),
 		// 一档皮肤与消息同帧:首屏不得依赖二次 REST(缓存/竞态会让 StatusBlock 回落统一面板)
 		cardfront,
 	};
@@ -2124,7 +2129,14 @@ const stage = new StageEngine({
 	},
 	// P7 剧情决策门禁（ask 工具）：复用 Phase 4 柱 1 的选择卡通道——
 	// 弹卡 → 用户作答（选项原文/自由输入）回喂模型重拟计划；停止 → 本拍收束，笔还给用户。
-	askUser: (question, options, signal) => askChoice(question, options, undefined, signal),
+	askUser: async (question, options, signal) => {
+		turnJobs?.waitingForInput();
+		try {
+			return await askChoice(question, options, undefined, signal);
+		} finally {
+			turnJobs?.resumeAfterInput();
+		}
+	},
 	// 媒体交付（8/06 重接）：show_image/audio/video/html + tts。
 	// 与 MCP 同源的断链——wire.ts 的消费端一直健在，缺的只是台上生产端。
 	media: true,
@@ -2159,13 +2171,27 @@ const stage = new StageEngine({
 	streamFn: streamSimple as unknown as StageStreamFn,
 	events: {
 		onTurnStart: () => broadcast({ type: "agent", state: "start" }),
-		onDelta: (kind, delta, draft, reset) =>
-			broadcast({ type: "delta", kind, delta, ...(draft ? { draft: true } : {}), ...(reset ? { reset: true } : {}) }),
-		onDraftResync: (segments) => broadcast({ type: "draft_resync", segments }),
-		onStreamClear: () => broadcast({ type: "stream", state: "clear" }),
+		onDelta: (kind, delta, draft, reset) => {
+			turnJobs?.appendDelta(kind, delta, draft, reset);
+			broadcast({ type: "delta", kind, delta, ...(draft ? { draft: true } : {}), ...(reset ? { reset: true } : {}) });
+		},
+		onDraftResync: (segments) => {
+			turnJobs?.resyncDraft(segments);
+			broadcast({ type: "draft_resync", segments });
+		},
+		onStreamClear: () => {
+			turnJobs?.clearStream();
+			broadcast({ type: "stream", state: "clear" });
+		},
 		onNotify: (level, text) => broadcast({ type: "notify", level, text }),
-		onActivity: (detail) => broadcast({ type: "activity", activity: { kind: "note", name: "stage", detail } }),
+		onActivity: (detail) => {
+			const activity = { kind: "note" as const, name: "stage", detail };
+			turnJobs?.appendActivity(activity);
+			broadcast({ type: "activity", activity });
+		},
 		onTurnEnd: (info) => {
+			// 先收敛任务再全量 hello，避免最终正文已落树、activeTurn 仍短暂显示 running。
+			turnJobs?.finishActive(info);
 			broadcast({ type: "agent", state: "end" });
 			// reroll/编辑输入后无产出（aborted 无落树 / error）：回退到 reroll 前的旧叶——
 			// 不许留下「只有 user 没有回复」的空拍（8/05：reroll 链上停止，前版本全消失）。
@@ -2228,8 +2254,28 @@ const stage = new StageEngine({
 	},
 });
 
+turnJobs = new TurnJobManager({
+	dir: dir(cwd, "jobs"),
+	canRun: (job) =>
+		job.sessionId === session.sessionId && (!job.sessionFile || job.sessionFile === session.sessionFile),
+	onChange: (turn) => broadcast({ type: "turn", turn }),
+	run: async (job) => {
+		if (job.sessionId !== session.sessionId || (job.sessionFile && job.sessionFile !== session.sessionFile)) {
+			throw new Error("剧情任务绑定的会话已经变化，未自动重放。");
+		}
+		await stage.performTurn(job.input);
+		// onTurnEnd 已携精确 entryId/error 收敛任务；这里仅给 manager runner 一个兜底结果。
+		const settled = turnJobs?.get(job.id);
+		return {
+			aborted: settled?.status === "cancelled",
+			...(settled?.resultEntryId ? { entryId: settled.resultEntryId } : {}),
+			...(settled?.status === "failed" && settled.error ? { error: settled.error } : {}),
+		};
+	},
+});
+
 /** 台上或旧循环任一在流式中（守卫共用） */
-const storyStreaming = (): boolean => session.isStreaming || stage.isStreaming;
+const storyStreaming = (): boolean => session.isStreaming || stage.isStreaming || (turnJobs?.hasPending ?? false);
 
 /**
  * 手动压缩（/compact 与 WS compact 帧共用）：走台上引擎自管压缩（M4）。
@@ -2261,7 +2307,7 @@ const hostCompact = async (): Promise<void> => {
 };
 
 /** 发送用户输入（含斜杠命令；命令后全量对齐所有端） */
-const handlePrompt = async (text: string) => {
+const handlePrompt = async (text: string, requestId?: string) => {
 	const trimmed = text.trim();
 	// ST 式变体：无参 /reroll 与 /swipe 由宿主处理（需重开一拍，扩展命令上下文无此能力）
 	if (/^\/reroll\s*$/i.test(trimmed)) {
@@ -2345,12 +2391,21 @@ const handlePrompt = async (text: string) => {
 
 	const isCommand = trimmed.startsWith("/");
 	if (!isCommand) {
+		const clientRequestId = requestId?.trim() || randomBytes(16).toString("hex");
+		// 断线重发同一 requestId：沿用原任务，不重复上屏用户消息、不重复开演。
+		if (turnJobs?.getByRequest(clientRequestId)) return;
 		broadcast({
 			type: "message",
 			message: { channel: "user", name: names.userName, text: trimmed },
 		});
-		// 流式中送达的输入由引擎排队到本拍结束（RP 语境：不打断正在进行的叙事）
-		await stage.performTurn(trimmed);
+		// 先把任务原子落盘并立即返回；真正的演出由服务端队列持有，与发起它的 WS 生命周期解耦。
+		if (!turnJobs) throw new Error("剧情任务管理器尚未就绪");
+		turnJobs.enqueue({
+			clientRequestId,
+			sessionId: session.sessionId,
+			...(session.sessionFile ? { sessionFile: session.sessionFile } : {}),
+			text: trimmed,
+		});
 		return;
 	}
 	await session.prompt(trimmed, session.isStreaming ? { streamingBehavior: "followUp" } : undefined);
@@ -2624,8 +2679,17 @@ wss.on("connection", (ws, req) => {
 		return;
 	}
 	clients.add(ws);
-	ws.send(JSON.stringify(helloFrame()));
-	if (storyStreaming()) ws.send(JSON.stringify({ type: "agent", state: "start" } satisfies ServerFrame));
+	const hello = helloFrame();
+	ws.send(JSON.stringify(hello));
+	const restoredTurn =
+		hello.type === "hello" &&
+		hello.activeTurn &&
+		(hello.activeTurn.status === "queued" ||
+			hello.activeTurn.status === "running" ||
+			hello.activeTurn.status === "waiting_input");
+	// activeTurn 已在 hello 内原子恢复时不再补发 start，避免前端刚还原的时间线又被清空。
+	if (storyStreaming() && !restoredTurn)
+		ws.send(JSON.stringify({ type: "agent", state: "start" } satisfies ServerFrame));
 	// 助手面板：连接即对齐（busy 随帧携带，断线重连恢复生成中状态）
 	ws.send(JSON.stringify(assistantHelloFrame()));
 	// 在线更新状态：新连接即对齐（有新版/就绪时主页 chip 才能亮）
@@ -2646,22 +2710,31 @@ wss.on("connection", (ws, req) => {
 				switch (frame.type) {
 					case "prompt": {
 						const text = String(frame.text ?? "").trim();
-						if (text) await handlePrompt(text);
+						if (text) await handlePrompt(text, frame.requestId);
 						break;
 					}
 					case "abort": {
+						const targetTurn = frame.turnId ? turnJobs?.get(frame.turnId) : turnJobs?.active;
+						if (frame.turnId && !targetTurn) return;
+						const abortsRunningTurn = !!targetTurn && turnJobs?.active?.id === targetTurn.id;
+						const abortsActiveWork = abortsRunningTurn || !frame.turnId;
 						// 强制停止：按下即收敛 UI/选择卡，再撕掉本拍（台上引擎 + 旧循环 + 委托中的助手）
-						for (const id of [...pendingChoices.keys()]) settleChoice(id, { stop: true });
+						if (abortsActiveWork) {
+							for (const id of [...pendingChoices.keys()]) settleChoice(id, { stop: true });
+						}
 						const wasStreaming = storyStreaming() || (assistantHost?.isStreaming() ?? false);
-						if (session.isStreaming) broadcast({ type: "agent", state: "end" });
-						if (assistantHost?.isStreaming()) broadcast({ type: "assistant_state", state: "end" });
-						stage.abort(); // 引擎自会以 aborted 谢幕（半拍正文保留）
-						void session.abort().catch((err) => {
-							console.error(`[liyuan] abort 失败：${err instanceof Error ? err.message : String(err)}`);
-						});
-						void assistantHost?.abort().catch((err) => {
-							console.error(`[liyuan] assistant abort(on story stop) 失败：${err instanceof Error ? err.message : String(err)}`);
-						});
+						turnJobs?.cancel(frame.turnId);
+						if (abortsActiveWork) {
+							if (session.isStreaming) broadcast({ type: "agent", state: "end" });
+							if (assistantHost?.isStreaming()) broadcast({ type: "assistant_state", state: "end" });
+							stage.abort(); // 引擎自会以 aborted 谢幕（半拍正文保留）
+							void session.abort().catch((err) => {
+								console.error(`[liyuan] abort 失败：${err instanceof Error ? err.message : String(err)}`);
+							});
+							void assistantHost?.abort().catch((err) => {
+								console.error(`[liyuan] assistant abort(on story stop) 失败：${err instanceof Error ? err.message : String(err)}`);
+							});
+						}
 						if (!wasStreaming) {
 							// 无流时仍可点停：无事发生
 						}
@@ -2862,6 +2935,7 @@ httpServer.listen(PORT, HOST, () => {
 const shutdown = async () => {
 	try {
 		unsubscribe?.();
+		turnJobs?.dispose();
 		for (const ws of clients) ws.close();
 		wss.close();
 		httpServer.close();

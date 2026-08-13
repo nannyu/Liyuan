@@ -176,7 +176,7 @@ function Stage-Clean {
     ".github",
     ".liyuan", ".liyuan-artifacts", ".liyuan-assistant", ".liyuan-cache", ".liyuan-codex",
     ".liyuan-lore", ".liyuan-media", ".liyuan-memory", ".liyuan-skills", ".liyuan-state",
-    ".liyuan-uploads", ".liyuan-audio", ".liyuan-worldline",
+    ".liyuan-uploads", ".liyuan-audio", ".liyuan-worldline", ".liyuan-jobs",
     ".rp-media", ".rp-uploads",
     ".playwright-mcp",
     ".superpowers", "superpowers",
@@ -318,7 +318,7 @@ skip_dirs = {
   'node_modules', '.git', '.github', '.liyuan-cache',
   '.liyuan-artifacts', '.liyuan-assistant', '.liyuan-codex', '.liyuan-lore',
   '.liyuan-media', '.liyuan-memory', '.liyuan-skills', '.liyuan-state',
-  '.liyuan-uploads', '.liyuan-audio', '.liyuan-worldline',
+  '.liyuan-uploads', '.liyuan-audio', '.liyuan-worldline', '.liyuan-jobs',
   '.rp-media', '.rp-uploads'
 }
 exec_names = {'start.sh', 'start.command', 'install.sh', 'docker-entrypoint.sh'}
@@ -361,7 +361,7 @@ if not any(n.endswith('server/mcp/vision-server.mjs') for n in names):
     errors.append('MISSING server/mcp/vision-server.mjs (builtin vision MCP would not ship)')
 forbidden_dirs = ['.liyuan-memory/', '.liyuan-state/', '.liyuan-uploads/', '.liyuan-lore/',
                   '.liyuan-codex/', '.liyuan-assistant/', '.liyuan-worldline/', '.liyuan-media/',
-                  '.liyuan-audio/', '.liyuan-cache/', '.superpowers/', 'scratch/', 'summaries/',
+                  '.liyuan-audio/', '.liyuan-jobs/', '.liyuan-cache/', '.superpowers/', 'scratch/', 'summaries/',
                   'output/', 'persist/', 'test/', 'assets/presets/']
 for d in forbidden_dirs:
     hits = [n for n in names if ('/' + d) in n]

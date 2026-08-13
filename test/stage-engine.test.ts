@@ -179,6 +179,10 @@ test("引擎：无模型/无用户输入的失败路径走通知，不落错误�
 		(e) => e.type === "message" && e.message?.role === "assistant",
 	);
 	assert.equal(asst.length, 0, "不落任何 assistant 消息");
+	const users = (sm.getBranch() as Array<{ type: string; message?: { role?: string } }>).filter(
+		(e) => e.type === "message" && e.message?.role === "user",
+	);
+	assert.equal(users.length, 1, "已接受的用户输入即使生成失败也必须留在会话树");
 	rmSync(cwd, { recursive: true, force: true });
 });
 

@@ -31,6 +31,7 @@ services:
       - liyuan-artifacts:/app/.liyuan-artifacts
       - liyuan-codex:/app/.liyuan-codex
       - liyuan-lore:/app/.liyuan-lore
+      - liyuan-jobs:/app/.liyuan-jobs
       # 配置 + 用户导入的角色卡 / 世界书（重建镜像不丢）
       # 无需任何手工准备：目录不存在时 Docker 自建，首启由 entrypoint 从 example 播种。
       # 只挂目录、不挂单个文件——文件级 bind mount 在宿主机缺文件时会被 Docker
@@ -60,3 +61,4 @@ volumes:
   liyuan-artifacts:
   liyuan-codex:
   liyuan-lore:
+  liyuan-jobs:

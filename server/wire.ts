@@ -162,6 +162,34 @@ export interface WireActivity {
 }
 
 /**
+ * 服务端持有的剧情生成任务快照。浏览器断线重连时由 hello 一并恢复，
+ * 因而 live.segments 是当前生成过程的权威显示态，不依赖旧页面内存。
+ */
+export type WireTurnStatus =
+	| "queued"
+	| "running"
+	| "waiting_input"
+	| "completed"
+	| "failed"
+	| "cancelled"
+	| "interrupted";
+
+export interface WireTurnSnapshot {
+	id: string;
+	clientRequestId: string;
+	sessionId: string;
+	sessionFile?: string;
+	input: string;
+	status: WireTurnStatus;
+	revision: number;
+	createdAt: number;
+	updatedAt: number;
+	live: { segments: WireSegment[] };
+	resultEntryId?: string;
+	error?: string;
+}
+
+/**
  * 右栏「助手」消息（独立会话，2026-07-14 职责拆分）。
  * 与剧情 WireMsg 分开：助手没有叙事通道语义，只有对话与过程。
  */
@@ -222,6 +250,8 @@ export type ServerFrame =
 			messages: WireMsg[];
 			state: WorldState | null;
 			stats: WireStats | null;
+			/** 当前会话最近一项后台生成任务；活动任务携带断线期间的实时稿件快照。 */
+			activeTurn?: WireTurnSnapshot;
 			/** agent 自建面板（柱 2）：当前活跃面板全量（页签序） */
 			panels: RpPanel[];
 			/**
@@ -244,6 +274,8 @@ export type ServerFrame =
 	/** 丢弃当前流式半成品（中间 tool 轮被过滤后，避免计划旁白叠进下一轮 / 误落本地气泡） */
 	| { type: "stream"; state: "clear" }
 	| { type: "agent"; state: "start" | "end" }
+	/** 后台任务状态变化；流式正文仍走 delta，避免每个 token 广播全量快照。 */
+	| { type: "turn"; turn: WireTurnSnapshot }
 	| { type: "activity"; activity: WireActivity }
 	| { type: "state"; state: WorldState }
 	/** agent 自建面板变化（panel_write/close 落盘、rewind 回退）：活跃面板全量推送（同 state 的 fs.watch 机制） */
@@ -294,8 +326,8 @@ export interface AssistantSessionInfo {
 
 /** Client → Server 帧 */
 export type ClientFrame =
-	| { type: "prompt"; text: string }
-	| { type: "abort" }
+	| { type: "prompt"; text: string; requestId?: string }
+	| { type: "abort"; turnId?: string }
 	/**
 	 * 重新生成最后一轮。
 	 * - text 缺省：ST 式——同一条用户消息下新开 sibling 变体（原回复保留，不产生世界线）

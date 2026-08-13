@@ -145,7 +145,7 @@ node --test test/*.test.ts     # 领域层单元测试
 node scripts/smoke-web.mjs     # Web 冒烟
 ```
 
-产品数据目录：`.liyuan-state/`（账本）· `.liyuan-artifacts/`（面板）· `.liyuan-codex/`（知识库）· `.liyuan-uploads/`（素材）· `.liyuan-skills/`（技能）等，均为纯 JSON / 文件，随时可备份迁移。
+产品数据目录：`.liyuan-state/`（账本）· `.liyuan-artifacts/`（面板）· `.liyuan-codex/`（知识库）· `.liyuan-uploads/`（素材）· `.liyuan-skills/`（技能）· `.liyuan-jobs/`（后台生成任务快照）等，均为纯 JSON / 文件，随时可备份迁移。
 
 ## 许可证
 

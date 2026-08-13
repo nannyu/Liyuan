@@ -60,6 +60,8 @@ export const DIRS = {
 	skills: ".liyuan-skills",
 	uploads: ".liyuan-uploads",
 	worldline: ".liyuan-worldline",
+	/** 浏览器断线可恢复的剧情生成任务快照 */
+	jobs: ".liyuan-jobs",
 	/** 内置向量记忆（正文库 / 外部资料库） */
 	memory: ".liyuan-memory",
 } as const;
@@ -76,6 +78,7 @@ const LEGACY_DIRS: Record<keyof typeof DIRS, string> = {
 	skills: ".rp-skills",
 	uploads: ".rp-uploads",
 	worldline: ".rp-worldline",
+	jobs: ".rp-jobs", // 从未存在过；为布局迁移表保持同构
 	memory: ".rp-memory", // 未使用过；占位
 };
 

@@ -18,6 +18,7 @@ packages/**/node_modules/
 .liyuan-state/
 .liyuan-uploads/
 .liyuan-audio/
+.liyuan-jobs/
 .liyuan-personas.json
 .rp-media/
 .rp-uploads/

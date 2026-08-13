@@ -75,10 +75,13 @@ import {
 import {
 	appendActivity,
 	appendDelta,
+	activitiesOf,
 	concatSegments,
 	pruneEmpty,
 	resyncDraftSegs,
 	segmentsFromLegacy,
+	textOf as timelineTextOf,
+	thinkingOf as timelineThinkingOf,
 	trailingText,
 	type TurnSegment,
 } from "./timeline.ts";
@@ -102,6 +105,8 @@ import type {
 	WireActivity,
 	WireSessionInfo,
 	WireStats,
+	WireTurnSnapshot,
+	WireTurnStatus,
 	UpdateWire,
 	WorldState,
 } from "./wire.ts";
@@ -111,6 +116,45 @@ interface Toast {
 	level: "info" | "warning" | "error";
 	text: string;
 }
+
+const PENDING_PROMPT_KEY = "liyuan.pendingPrompt";
+
+interface PendingPrompt {
+	requestId: string;
+	sessionId: string;
+	text: string;
+}
+
+const newRequestId = (): string =>
+	globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+const rememberPrompt = (prompt: PendingPrompt): void => {
+	try {
+		localStorage.setItem(PENDING_PROMPT_KEY, JSON.stringify(prompt));
+	} catch {
+		// 隐私模式/配额限制：不影响正常发送，只失去断线重投兜底。
+	}
+};
+
+const pendingPrompt = (): PendingPrompt | null => {
+	try {
+		const parsed = JSON.parse(localStorage.getItem(PENDING_PROMPT_KEY) ?? "null") as Partial<PendingPrompt> | null;
+		return parsed && typeof parsed.requestId === "string" && typeof parsed.sessionId === "string" && typeof parsed.text === "string"
+			? { requestId: parsed.requestId, sessionId: parsed.sessionId, text: parsed.text }
+			: null;
+	} catch {
+		return null;
+	}
+};
+
+const forgetPrompt = (requestId?: string): void => {
+	try {
+		const pending = pendingPrompt();
+		if (!requestId || pending?.requestId === requestId) localStorage.removeItem(PENDING_PROMPT_KEY);
+	} catch {
+		// 本地兜底清理失败不影响服务端任务。
+	}
+};
 
 /** 通知气泡自动消散时间；仍可点击立即关闭 */
 const TOAST_TTL_MS: Record<Toast["level"], number> = {
@@ -231,6 +275,7 @@ export default function App() {
 	const [liveSegs, setLiveSegs] = useState<TurnSegment[]>([]);
 	const [thinkingLive, setThinkingLive] = useState(false);
 	const [busy, setBusy] = useState(false);
+	const [turnStatus, setTurnStatus] = useState<WireTurnStatus | null>(null);
 	const [toolNote, setToolNote] = useState<string | null>(null);
 	const [toasts, setToasts] = useState<Toast[]>([]);
 	// 在线更新：WS update 帧驱动；modal 开关与 ready 气泡的本次会话收起标记
@@ -371,6 +416,8 @@ export default function App() {
 	 */
 	const turnSegsRef = useRef<TurnSegment[]>([]);
 	const sessionIdRef = useRef("");
+	const activeTurnIdRef = useRef<string | null>(null);
+	const seenTurnNoticeRef = useRef("");
 	/** 用户已按停止：忽略迟到 delta，避免 UI 解锁后还在刷字 */
 	const abortingRef = useRef(false);
 	// 助手流式缓冲与本轮工具活动（与剧情侧同构，各自独立）
@@ -656,6 +703,51 @@ export default function App() {
 		})();
 	}, []);
 
+	/** hello/turn 共用：从服务端权威快照恢复生成态；页面旧内存不参与判定。 */
+	const hydrateTurn = useCallback(
+		(turn?: WireTurnSnapshot) => {
+			if (!turn) {
+				activeTurnIdRef.current = null;
+				setTurnStatus(null);
+				setBusy(false);
+				return;
+			}
+			forgetPrompt(turn.clientRequestId); // 收到任务快照即视为服务端已接受，可停止断线重投。
+			const active = turn.status === "queued" || turn.status === "running" || turn.status === "waiting_input";
+			setTurnStatus(turn.status);
+			if (!active) {
+				activeTurnIdRef.current = null;
+				setBusy(false);
+				const noticeKey = `${turn.id}:${turn.status}:${turn.revision}`;
+				if (
+					(turn.status === "failed" || turn.status === "interrupted") &&
+					seenTurnNoticeRef.current !== noticeKey
+				) {
+					seenTurnNoticeRef.current = noticeKey;
+					pushToast("error", turn.error || (turn.status === "interrupted" ? "生成被后台重启中断" : "生成失败"));
+				}
+				return;
+			}
+
+			abortingRef.current = false;
+			activeTurnIdRef.current = turn.id;
+			setBusy(true);
+			const segments = turn.live.segments as TurnSegment[];
+			setSegs(segments);
+			const text = timelineTextOf(segments);
+			const thinking = timelineThinkingOf(segments);
+			streamRef.current = text;
+			streamThinkingRef.current = thinking;
+			setStreamText(text);
+			setStreamThinking(thinking);
+			turnActsRef.current = activitiesOf(segments);
+			setThinkingLive(segments[segments.length - 1]?.kind === "thinking");
+			const lastActivity = turnActsRef.current[turnActsRef.current.length - 1];
+			setToolNote(turn.status === "waiting_input" ? "等待你的选择…" : lastActivity?.detail || null);
+		},
+		[pushToast],
+	);
+
 	const onFrame = useCallback(
 		(frame: ServerFrame) => {
 			switch (frame.type) {
@@ -708,6 +800,12 @@ export default function App() {
 					} else if (welcomeRef.current || leftPanelRef.current === "sessions") {
 						// 同会话 hello（重载）：刷新列表
 						sendRef.current({ type: "sessions" });
+					}
+					hydrateTurn(frame.activeTurn);
+					// 提交后若在收到任务 ack 前断线，按同一 requestId 重投；服务端幂等去重。
+					const retry = pendingPrompt();
+					if (retry && retry.sessionId === frame.sessionId) {
+						sendRef.current({ type: "prompt", text: retry.text, requestId: retry.requestId });
 					}
 					document.title = "梨园";
 					refreshAvatars();
@@ -778,6 +876,7 @@ export default function App() {
 						// 新一轮生成：解除停止冻结
 						abortingRef.current = false;
 						setBusy(true);
+						setTurnStatus((status) => status ?? "running");
 						resetActs();
 						resetSegs();
 					} else {
@@ -786,6 +885,8 @@ export default function App() {
 						const wasAborting = abortingRef.current;
 						if (!wasAborting) abortingRef.current = false;
 						setBusy(false);
+						setTurnStatus(null);
+						activeTurnIdRef.current = null;
 						setThinkingLive(false);
 						setToolNote(null);
 						// 本轮 agent 可能写了技能/知识库/世界书等资产：通知 watchAgent 面板重拉
@@ -816,6 +917,9 @@ export default function App() {
 							resetSegs();
 						}
 					}
+					break;
+				case "turn":
+					hydrateTurn(frame.turn);
 					break;
 				case "activity":
 					// 工具开始时把已流出的计划旁白留档，再清流式；步骤实时追加进清单
@@ -1006,7 +1110,7 @@ export default function App() {
 					break;
 			}
 		},
-		[pushToast, refreshAvatars, refreshCardFront],
+		[hydrateTurn, pushToast, refreshAvatars, refreshCardFront],
 	);
 
 	const ws = useWire(onFrame, setConn);
@@ -1148,6 +1252,22 @@ export default function App() {
 		return (a === "(" || a === "（") && (b === ")" || b === "）");
 	};
 
+	const sendStoryPrompt = useCallback(
+		(text: string) => {
+			if (text.trimStart().startsWith("/")) {
+				ws.send({ type: "prompt", text });
+				return;
+			}
+			const requestId = newRequestId();
+			rememberPrompt({ requestId, sessionId: sessionIdRef.current, text });
+			ws.send({ type: "prompt", text, requestId });
+			// 服务端 turn:queued 很快会校准；这里先锁发送按钮，消除双击重复提交窗口。
+			setTurnStatus("queued");
+			setBusy(true);
+		},
+		[ws],
+	);
+
 	const send = useCallback(() => {
 		const typed = input.trim();
 		// 附件随消息：路径清单作为尾行附在正文后（这一行即持久记录，重放同路径解析）
@@ -1172,7 +1292,7 @@ export default function App() {
 			setCenterMenu(null);
 			openLeft("worldline");
 		} else {
-			ws.send({ type: "prompt", text });
+			sendStoryPrompt(text);
 			// 场外标记 → server 会改道助手会话：这边顺手展开右栏，让回复有地方落
 			if (looksBackstage(typed)) {
 				setAsstUnread(false);
@@ -1182,7 +1302,7 @@ export default function App() {
 		setInput("");
 		setPending([]);
 		if (inputRef.current) inputRef.current.style.height = "auto";
-	}, [input, pending, conn, ws, openStoreModal, openRight]);
+	}, [input, pending, conn, ws, openStoreModal, openRight, sendStoryPrompt]);
 
 	// 卡 HTML（如 Living With Slaves 开场表单）调用 triggerSlash(`/send …|/trigger`)
 	// 须接到输入框 / WS，否则界面显示「档案已发送」但聊天栏空白
@@ -1219,7 +1339,7 @@ export default function App() {
 				setWelcome(false);
 				setAtHome(false);
 				touchVisit();
-				ws.send({ type: "prompt", text: body });
+				sendStoryPrompt(body);
 				setInput("");
 				setPending([]);
 				if (inputRef.current) inputRef.current.style.height = "auto";
@@ -1231,7 +1351,7 @@ export default function App() {
 			},
 		});
 		return () => registerTavernChatBridge(null);
-	}, [ws, pushToast]);
+	}, [ws, pushToast, sendStoryPrompt]);
 
 	// 上传：即时落服务端 .liyuan-uploads/，成功后进 pending（chip 显示，发送时随消息）
 	const doUpload = useCallback(
@@ -2054,7 +2174,9 @@ export default function App() {
 									<div className="msg-head">
 										<MsgAvatar src={charAvatarUrl} name={charName} kind="char" />
 										<span className="msg-name msg-name-char">{charName}</span>
-										<span className="msg-live-tag">生成中</span>
+										<span className="msg-live-tag">
+											{turnStatus === "queued" ? "排队中" : turnStatus === "waiting_input" ? "等待选择" : "生成中"}
+										</span>
 									</div>
 									{liveSegs.length > 0 ? (
 										<TurnTimeline segments={liveSegs} skin={cardSkin} live />
@@ -2315,7 +2437,7 @@ export default function App() {
 											unfinished: true,
 										};
 										setMessages((ms) => upsertTurnReply(ms, leftover));
-										ws.send({ type: "abort" });
+										ws.send({ type: "abort", ...(activeTurnIdRef.current ? { turnId: activeTurnIdRef.current } : {}) });
 									}}
 									title="停止"
 									aria-label="停止生成"

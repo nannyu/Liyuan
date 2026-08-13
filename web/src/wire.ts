@@ -14,5 +14,7 @@ export type {
 	WireSessionInfo,
 	WireStats,
 	WireSwipe,
+	WireTurnSnapshot,
+	WireTurnStatus,
 	WorldState,
 } from "../../server/wire.ts";

@@ -32,7 +32,7 @@ $xd = @(
   ".git",
   ".liyuan", ".liyuan-artifacts", ".liyuan-cache", ".liyuan-codex",
   ".liyuan-lore", ".liyuan-media", ".liyuan-skills", ".liyuan-state",
-  ".liyuan-uploads", ".rp-media", ".rp-uploads",
+  ".liyuan-uploads", ".liyuan-jobs", ".rp-media", ".rp-uploads",
   ".playwright-mcp",
   "ab-test", "import-test"
 )
@@ -86,7 +86,7 @@ with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
             'node_modules', '.git', '.liyuan', '.liyuan-cache',
             '.liyuan-artifacts', '.liyuan-codex', '.liyuan-lore',
             '.liyuan-media', '.liyuan-skills', '.liyuan-state',
-            '.liyuan-uploads', '.rp-media', '.rp-uploads'
+            '.liyuan-uploads', '.liyuan-jobs', '.rp-media', '.rp-uploads'
         }]
         for f in files:
             if f.endswith(('.log', '.bak', '.tsbuildinfo')):

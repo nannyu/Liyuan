@@ -493,14 +493,17 @@ export class StageEngine {
 			}
 		}
 
+		if (userText !== null) {
+			sm.appendMessage(nowMsg(userText));
+			// 后台任务的接受边界：用户输入先落树并强制物化会话。即使随后无模型、
+			// provider 报错或浏览器已经关闭，刷新后也仍能看到自己提交过什么。
+			sm.flush();
+		}
+
 		const model = this.#deps.getModel();
 		if (!model) {
 			ev.onNotify?.("error", "尚未配置剧情模型——请先在「连接」面板选择模型。");
 			return { aborted: false, error: "no-model" };
-		}
-
-		if (userText !== null) {
-			sm.appendMessage(nowMsg(userText));
 		}
 
 		// 上下文 = f(分支)
