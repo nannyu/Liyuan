@@ -6,7 +6,7 @@
  * 手机（<1000px）：面板变全屏抽屉。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, Fragment } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
 	apiGet,
 	apiGetCacheClear,
@@ -232,8 +232,6 @@ export default function App() {
 	const [thinkingLive, setThinkingLive] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [toolNote, setToolNote] = useState<string | null>(null);
-	/** 本轮过程步骤（实时清单渲染用；与 turnActsRef 同内容） */
-	const [liveActs, setLiveActs] = useState<WireActivity[]>([]);
 	const [toasts, setToasts] = useState<Toast[]>([]);
 	// 在线更新：WS update 帧驱动；modal 开关与 ready 气泡的本次会话收起标记
 	const [updateInfo, setUpdateInfo] = useState<UpdateWire | null>(null);
@@ -245,6 +243,8 @@ export default function App() {
 	const [pending, setPending] = useState<PendingUpload[]>([]);
 	const [uploading, setUploading] = useState(false);
 	const [atBottom, setAtBottom] = useState(true);
+	/** 当前会话首次载入 / 从欢迎页重新进入时，触发一次定位到底部；流式增量不会改动此值 */
+	const [conversationScrollEpoch, setConversationScrollEpoch] = useState(0);
 	/** 消息内联编辑：idx + 草稿 + 类型（用户改写后 reroll / agent 改写后 editreply） */
 	const [msgEdit, setMsgEdit] = useState<{ idx: number; kind: "user" | "narrative" | "greeting"; draft: string } | null>(
 		null,
@@ -387,9 +387,31 @@ export default function App() {
 	const sendRef = useRef<(frame: import("./wire.ts").ClientFrame) => void>(() => {});
 	const toastSeq = useRef(0);
 	const listRef = useRef<HTMLDivElement>(null);
+	const flowRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
 	const uploadInputRef = useRef<HTMLInputElement>(null);
-	const atBottomRef = useRef(true);
+
+	const updateAtBottom = useCallback((next: boolean) => {
+		setAtBottom((current) => (current === next ? current : next));
+	}, []);
+
+	/** 只判断当前位置，不推动页面；内容增长时也可据此亮出「到底部」按钮 */
+	const syncAtBottom = useCallback(() => {
+		const el = listRef.current;
+		if (!el) return;
+		const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+		updateAtBottom(distance <= 24);
+	}, [updateAtBottom]);
+
+	const scrollChatToBottom = useCallback(
+		(behavior: ScrollBehavior = "auto") => {
+			const el = listRef.current;
+			if (!el) return;
+			el.scrollTo({ top: el.scrollHeight, behavior });
+			updateAtBottom(true);
+		},
+		[updateAtBottom],
+	);
 
 	useEffect(() => {
 		localStorage.setItem("liyuan.panels", JSON.stringify({ left: leftPanel, right: rightPanel }));
@@ -435,6 +457,32 @@ export default function App() {
 		});
 		return () => cancelAnimationFrame(id1);
 	}, [welcome]);
+
+	// 会话首次载入、切换会话或从欢迎页重新进入：只在入口处定位一次到底部。
+	// 后续流式输出只增长内容，不再写 scrollTop，用户可以稳定地上翻历史。
+	useLayoutEffect(() => {
+		if (welcome || conversationScrollEpoch === 0) return;
+		scrollChatToBottom();
+	}, [conversationScrollEpoch, scrollChatToBottom, welcome]);
+
+	// 流式内容会不断改变 scrollHeight，但不会触发 scroll 事件；观察内容尺寸，仅刷新按钮状态。
+	useEffect(() => {
+		const list = listRef.current;
+		const flow = flowRef.current;
+		if (!list || !flow || typeof ResizeObserver === "undefined") return;
+		let raf = 0;
+		const observer = new ResizeObserver(() => {
+			cancelAnimationFrame(raf);
+			raf = requestAnimationFrame(syncAtBottom);
+		});
+		observer.observe(list);
+		observer.observe(flow);
+		syncAtBottom();
+		return () => {
+			cancelAnimationFrame(raf);
+			observer.disconnect();
+		};
+	}, [syncAtBottom]);
 
 	const pushToast = useCallback((level: Toast["level"], text: string) => {
 		const id = ++toastSeq.current;
@@ -497,15 +545,13 @@ export default function App() {
 		setAsstStreamThinking("");
 	};
 
-	/** 本轮过程步骤追加：ref 供定稿时附着到消息，state 供生成中的实时清单渲染（codex 式全程可见） */
+	/** 本轮过程步骤追加：ref 供定稿时附着到消息；实时过程由 turnSegs 时间线渲染 */
 	const pushAct = (a: WireActivity) => {
 		turnActsRef.current = [...turnActsRef.current, a];
-		setLiveActs(turnActsRef.current);
 		setSegs(appendActivity(turnSegsRef.current, a));
 	};
 	const resetActs = () => {
 		turnActsRef.current = [];
-		setLiveActs([]);
 	};
 	/**
 	 * 中间旁白留档：模型在调工具前吐出的计划文字被服务端从叙事流过滤时，客户端把它收进过程清单。
@@ -518,7 +564,6 @@ export default function App() {
 			...turnActsRef.current,
 			{ kind: "note", name: "", detail: t.length > 400 ? `${t.slice(0, 400)}…` : t },
 		];
-		setLiveActs(turnActsRef.current);
 	};
 
 	/**
@@ -650,6 +695,7 @@ export default function App() {
 					// 切到别的会话：清空会话内数据（同会话的命令后重放则保留）
 					if (sessionIdRef.current !== frame.sessionId) {
 						sessionIdRef.current = frame.sessionId;
+						setConversationScrollEpoch((epoch) => epoch + 1);
 						setWarnings([]);
 						setActiveChoice(null);
 						turnActsRef.current = [];
@@ -764,13 +810,10 @@ export default function App() {
 									...(wasAborting ? { unfinished: true } : {}),
 								};
 								setMessages((ms) => upsertTurnReply(ms, leftover));
-							} else if (wasAborting) {
-								setLiveActs([]);
 							}
 						} else {
 							clearStream();
 							resetSegs();
-							setLiveActs([]);
 						}
 					}
 					break;
@@ -1085,26 +1128,11 @@ export default function App() {
 		if (greetingOnly || messages.some((m) => m.channel === "greeting")) void refreshGreetingMeta();
 	}, [greetingOnly, messages, refreshGreetingMeta]);
 
-	// 跟随滚动：仅当用户本就在底部
-	useEffect(() => {
-		const el = listRef.current;
-		if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
-	}, [messages, streamText, streamThinking, thinkingLive, toolNote, liveActs, liveSegs]);
-
-	const onScroll = () => {
-		const el = listRef.current;
-		if (!el) return;
-		const near = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
-		atBottomRef.current = near;
-		setAtBottom(near);
-	};
+	const onScroll = () => syncAtBottom();
 
 	const jumpToBottom = () => {
-		const el = listRef.current;
-		if (!el) return;
-		atBottomRef.current = true;
-		setAtBottom(true);
-		el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+		// 单次、即时到达当前底部；之后即使仍在输出，也不会重新绑定滚动位置。
+		scrollChatToBottom();
 	};
 
 	/**
@@ -1153,8 +1181,6 @@ export default function App() {
 		}
 		setInput("");
 		setPending([]);
-		atBottomRef.current = true;
-		setAtBottom(true);
 		if (inputRef.current) inputRef.current.style.height = "auto";
 	}, [input, pending, conn, ws, openStoreModal, openRight]);
 
@@ -1196,8 +1222,6 @@ export default function App() {
 				ws.send({ type: "prompt", text: body });
 				setInput("");
 				setPending([]);
-				atBottomRef.current = true;
-				setAtBottom(true);
 				if (inputRef.current) inputRef.current.style.height = "auto";
 				pushToast("info", "已从界面注入并发送");
 			},
@@ -1863,7 +1887,7 @@ export default function App() {
 
 				<main className="center">
 					<div className="list" ref={listRef} onScroll={onScroll} onPointerDown={() => composerTools && setComposerTools(false)}>
-						<div className="flow">
+						<div className="flow" ref={flowRef}>
 							{/* 欢迎区嵌在聊天流（学 ST）：顶栏/侧栏/输入框仍可用 */}
 							{welcome ? (
 								<WelcomePanel
@@ -2059,8 +2083,14 @@ export default function App() {
 						</div>
 					</div>
 
-					{!atBottom && (
-						<button className="jump-bottom" onClick={jumpToBottom} title="回到最新" aria-label="回到最新">
+					{!welcome && !atBottom && (
+						<button
+							type="button"
+							className="jump-bottom"
+							onClick={jumpToBottom}
+							title="到达会话底部"
+							aria-label="到达会话底部"
+						>
 							<IconChevronDown size={17} />
 						</button>
 					)}
