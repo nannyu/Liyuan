@@ -369,10 +369,25 @@ export interface LoreSearchHit {
 export interface PresetBlockView {
 	id: string;
 	name: string;
+	/** 派生只读值：相对 chatHistory 槽位的前后（酒馆里这是位置，不是可选属性） */
 	channel: "system" | "postHistory";
 	role: string;
 	enabled: boolean;
+	/** 酒馆内置槽位（Chat History / Char Description…）：占位，无正文 */
+	marker: boolean;
+	/** in-chat 深度注入才有 */
+	depth?: number;
 	chars: number;
+}
+
+/** PUT /api/preset 的块补丁——只发改动，原文其余字节不动 */
+export interface PresetBlockPatch {
+	id: string;
+	enabled?: boolean;
+	name?: string;
+	content?: string;
+	/** 从预设整块移除 */
+	remove?: boolean;
 }
 
 /** GET /api/preset/block 单块全文（编辑用） */
@@ -387,16 +402,11 @@ export interface PresetResponse {
 	dirty?: boolean;
 	preset: {
 		name: string;
+		/** st＝酒馆原文；rp＝v1.4.1 及以前导入的旧梨园格式 */
+		kind?: "st" | "rp";
 		samplers: Record<string, number>;
 		blocks: Array<PresetBlockView & { content?: string }>;
 	} | null;
-}
-
-export interface ConvertReportItem {
-	identifier: string;
-	name: string;
-	action: string;
-	contentChars: number;
 }
 
 export interface CommandMeta {

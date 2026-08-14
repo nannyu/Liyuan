@@ -15,7 +15,7 @@ import {
 	type BranchEntryLike,
 } from "../src/stage/assemble.ts";
 import { extractDraftRules } from "../src/draft.ts";
-import { constantLoreOf, evalPostHistoryBlocks, loadStageMaterials } from "../src/stage/materials.ts";
+import { assemblePresetAfter, constantLoreOf, loadStageMaterials } from "../src/stage/materials.ts";
 import { defaultState } from "../src/state.ts";
 import { DEFAULT_CONFIG, type RpConfig } from "../src/types.ts";
 
@@ -164,18 +164,37 @@ test("system prompt：消息流约定补齐名录/面板/索引语义（每拍�
 	assert.ok(p.includes("`memory_search`") && p.includes("`lorebook_search`"), "检索通道指引在语义表（一次说清）");
 });
 
-test("system prompt：预设留驻内容原文原序直通，零 harness 引导语（§2.1-9）", () => {
+test("system prompt：预设装配段排最前、原文原序，harness 骨架殿后（PLAN-PRESET-PIPELINES §四之四）", () => {
 	const withPreset = buildStageSystemPrompt({
 		card,
 		config,
 		constantLore: [],
-		presetResident: ["破限框架原文。", "文风块：要生动。", "不替用户做重大决定。"],
+		presetBefore: ["破限框架原文。", "文风块：要生动。", "不替用户做重大决定。"],
 	});
-	assert.ok(withPreset.includes("# 预设指令（用户自备，按原序）"), "留驻区标题在场（署名）");
+	assert.ok(withPreset.startsWith("破限框架原文。"), "预设装配段是 system 主体，排最前");
+	assert.ok(!withPreset.includes("# 预设指令（用户自备，按原序）"), "梨园不再给预设加标题（铁律一）");
 	const at = (t: string) => withPreset.indexOf(t);
 	assert.ok(at("破限框架原文。") < at("文风块：要生动。") && at("文风块：要生动。") < at("不替用户做重大决定。"), "原序保持");
+	assert.ok(at("不替用户做重大决定。") < at("# 舞台"), "harness 骨架殿后");
 	assert.ok(!withPreset.includes("# 文风与写法") && !withPreset.includes("# 行为边界"), "B/C 归拢节已拆（零归拢）");
-	assert.ok(!withPreset.includes("写作时照此执行") && !withPreset.includes("刻刻要守"), "零引导语");
+});
+
+test("system prompt：marker 归位——预设声明过的槽位，梨园不再按自己版式重出一遍", () => {
+	const rich = { ...card, description: "云澜是师姐。", personality: "冷。", scenario: "山门外。" };
+	const declared = buildStageSystemPrompt({
+		card: rich,
+		config,
+		constantLore: [],
+		presetBefore: ["【预设槽位里的卡描述】云澜是师姐。"],
+		declaredMarkers: new Set(["charDescription", "charPersonality", "personaDescription"]),
+	});
+	assert.ok(!declared.includes("# 用户扮演："), "personaDescription 已归位，兜底不再出");
+	assert.ok(!declared.includes("## 性格"), "charPersonality 已归位");
+	assert.ok(declared.includes("## 当前场景"), "scenario 没被声明 → 梨园兜底补上，卡内容不丢");
+
+	const none = buildStageSystemPrompt({ card: rich, config, constantLore: [], presetBefore: ["旧格式预设无 marker。"] });
+	assert.ok(none.includes("# 你扮演的角色：云澜") && none.includes("云澜是师姐。"), "一个槽位都没声明时全走兜底版式");
+	assert.ok(none.includes("# 用户扮演："), "人设兜底在场");
 });
 
 test("末端注入：事实块——数据带标注送达，语义归 system；导演备注容器解散（D5/D6/D7）", () => {
@@ -268,23 +287,22 @@ test("loadStageMaterials：卡+预设宏求值+postHistory 每拍求值", () => 
 		const m = loadStageMaterials(cwd);
 		assert.equal(m.card.name, "云澜");
 		assert.equal(m.presetActive, true);
-		assert.equal(m.splitTable, null, "非内置预设走四类兜底");
-		assert.equal(m.presetResident.length, 1, "文风类兜底入常驻（原序列表）");
-		assert.equal(m.presetResident[0].section, "B", "拆层记账标签保留");
-		assert.ok(m.presetResident[0].text.includes("文风基调：清冷"), "setvar/getvar 链在 system 块内生效");
+		assert.equal(m.presetDoc?.kind, "rp", "旧梨园格式仍能读");
+		assert.equal(m.presetBefore.length, 1, "启用块全量进历史前段（不再拆层退场）");
+		assert.ok(m.presetBefore[0].text.includes("文风基调：清冷"), "setvar/getvar 链跨块生效");
 		assert.equal(m.macroWarnings.length, 0);
 		assert.equal(constantLoreOf(m).length, 0);
 
-		const ph = evalPostHistoryBlocks(m, "我上前行礼。") ?? [];
+		const ph = assemblePresetAfter(m, "我上前行礼。") ?? [];
 		assert.equal(ph.length, 1);
-		assert.ok(ph[0].content.includes("回应「我上前行礼。」"), "lastusermessage 宏用本拍原文");
-		assert.ok(ph[0].content.includes("保持清冷"), "postHistory 继承 system 块变量表");
+		assert.ok(ph[0].text.includes("回应「我上前行礼。」"), "lastusermessage 宏用本拍原文");
+		assert.ok(ph[0].text.includes("保持清冷"), "历史后段照样看得到前面块设的变量");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
 
-test("loadStageMaterials：纪律块撤出写作上下文（R7）——system prompt 不见禁词表，规则/纪律单独可取", () => {
+test("loadStageMaterials：启用块全量进提示词——拆层退场后不再有块被偷偷扔掉", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "liyuan-pol-"));
 	try {
 		writeFileSync(join(cwd, "card.json"), JSON.stringify({ data: { name: "云澜", first_mes: "你来了。" } }));
@@ -305,19 +323,18 @@ test("loadStageMaterials：纪律块撤出写作上下文（R7）——system pr
 		mkdirSync(join(cwd, ".liyuan"), { recursive: true });
 
 		const m = loadStageMaterials(cwd);
-		assert.equal(m.presetResident.length, 1, "常驻只剩文风");
-		assert.ok(m.presetResident[0].text.includes("文风"));
-		assert.equal(m.presetResident.map((p) => p.text).join("").includes("词汇黑名单"), false, "纪律块不进常驻（rules-only）");
-		assert.equal(m.presetRuleTexts.length, 2, "规则提取仍看全量");
+		assert.equal(m.presetBefore.length, 2, "两块都在——用户开着的块一个不扔");
+		assert.equal(m.presetRuleTexts.length, 2, "规则提取看全量");
 
 		const sp = buildStageSystemPrompt({
 			card: m.card,
 			config: m.config,
 			constantLore: [],
-			presetResident: m.presetResident.map((p) => p.text),
+			presetBefore: m.presetBefore.map((p) => p.text),
+			declaredMarkers: m.declaredMarkers,
 		});
-		assert.ok(sp.includes("文风：冷而克制"), "写作块在场");
-		assert.ok(!sp.includes("词汇黑名单"), "纪律细则不进写作上下文");
+		assert.ok(sp.includes("文风：冷而克制"), "文风块在场");
+		assert.ok(sp.includes("词汇黑名单"), "纪律块也在场——判死改判归用户，梨园不代劳");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
@@ -334,9 +351,9 @@ test("默认预设（§4.A）：config.preset 空 → 装 presets/默认.json；
 		writeFileSync(join(cwd, "presets", "默认.json"), real);
 
 		const m = loadStageMaterials(cwd);
-		assert.equal(m.preset?.name, "默认", "默认预设装载");
+		assert.equal(m.presetDoc?.name, "默认", "默认预设装载");
 		assert.equal(m.presetActive, true, "presetActive 恒真（§4.A）");
-		const resident = m.presetResident.map((p) => p.text).join("\n");
+		const resident = m.presetBefore.map((p) => p.text).join("\n");
 		assert.ok(resident.includes("绝不替 沈舟"), "主权兜底由默认预设承接（宏已求值）");
 		assert.ok(resident.includes("斜体"), "视角/排版承接");
 		assert.ok(resident.includes("感官细节"), "感官承接");
@@ -355,14 +372,14 @@ test("默认预设（§4.A）：config.preset 空 → 装 presets/默认.json；
 			JSON.stringify({ card: "card.json", preset: "preset.json", userName: "沈舟" }),
 		);
 		const m2 = loadStageMaterials(cwd);
-		assert.equal(m2.preset?.name, "用户预设");
-		assert.ok(!m2.presetResident.map((p) => p.text).join("").includes("绝不替"), "默认预设零叠加");
+		assert.equal(m2.presetDoc?.name, "preset", "预设名取文件名，不取文件里写的 name");
+		assert.ok(!m2.presetBefore.map((p) => p.text).join("").includes("绝不替"), "默认预设零叠加");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
 
-test("句级过滤接线：写作块摘掉验算行，规则提取仍看未过滤原文", () => {
+test("预设原文直通：句级过滤退场，验算行也照进提示词", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "liyuan-audit-"));
 	try {
 		writeFileSync(join(cwd, "card.json"), JSON.stringify({ data: { name: "云澜", description: "师姐" } }));
@@ -395,13 +412,11 @@ test("句级过滤接线：写作块摘掉验算行，规则提取仍看未过�
 		writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "card.json", preset: "preset.json" }));
 
 		const m = loadStageMaterials(cwd);
-		const writing = m.presetResident.filter((p) => p.section !== "A").map((p) => p.text).join("\n");
-		assert.ok(writing.includes("以直接对白为主"), "文风指令留在写作台上");
-		assert.ok(!writing.includes("自检"), "验算指令已摘出写作上下文");
-		assert.equal(m.auditLinesDropped, 1, "摘行数可观测");
+		const writing = m.presetBefore.map((p) => p.text).join("\n");
+		assert.ok(writing.includes("以直接对白为主"), "文风指令原文直通");
+		assert.ok(writing.includes("自检"), "句级过滤已退场——预设作者写的每一行都照进提示词（铁律一）");
 
-		// 规则提取看的是未过滤原文（字数规则不能因过滤而丢）
-		assert.ok(m.presetRuleTexts.join("\n").includes("自检"), "规则提取源保留全文");
+		// 规则提取看的是同一份原文（字数规则照旧提得出）
 		assert.ok(m.presetRuleTexts.join("\n").includes("800-1200"));
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });

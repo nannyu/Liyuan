@@ -21,17 +21,19 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { RpPreset } from "../preset.ts";
+import type { PresetDoc } from "../preset-doc.ts";
 import type { CharacterCard } from "../types.ts";
 import { parseContract, type OutputContractModule } from "./output-contract.ts";
 
 const DECLARED_FILE = "output-contract.declared.json";
 
-/** 声明缓存指纹：卡全文 + 预设块内容 + 预设块开关位图 */
-export function declareFingerprint(card: CharacterCard, preset: RpPreset | null | undefined): string {
+/** 声明缓存指纹：卡全文 + 预设块内容 + 预设块开关位图（开关一动就重新声明） */
+export function declareFingerprint(card: CharacterCard, preset: PresetDoc | null | undefined): string {
 	const h = createHash("sha1");
 	h.update(JSON.stringify(card));
-	for (const b of preset?.blocks ?? []) h.update(`${b.id} ${b.enabled ? 1 : 0} ${b.name ?? ""} ${b.content}`);
+	for (const e of preset?.entries ?? []) {
+		h.update(`${e.identifier} ${e.enabled ? 1 : 0} ${e.name} ${e.content}`);
+	}
 	return h.digest("hex").slice(0, 16);
 }
 
@@ -69,7 +71,7 @@ const SYSTEM_PROMPT = [
  */
 export function buildDeclarePrompt(
 	card: CharacterCard,
-	preset: RpPreset | null | undefined,
+	preset: PresetDoc | null | undefined,
 ): { systemPrompt: string; userText: string } {
 	const parts: string[] = [`# 角色卡「${card.name}」`, "", "## 开场白", clip(card.firstMes, 8000)];
 	if (card.mesExample.trim()) parts.push("", "## 对话示例", clip(card.mesExample, 6000));
@@ -90,18 +92,18 @@ export function buildDeclarePrompt(
 		}
 		if (omitted > 0) parts.push("", `（另有 ${omitted} 条超出篇幅，略）`);
 	}
-	const enabledBlocks = (preset?.blocks ?? []).filter((b) => b.enabled && b.content.trim());
-	if (enabledBlocks.length > 0) {
+	const enabled = (preset?.entries ?? []).filter((e) => e.enabled && !e.marker && e.content.trim());
+	if (enabled.length > 0) {
 		parts.push("", `# 预设「${preset!.name}」启用块`);
 		let used = 0;
 		let omitted = 0;
-		for (const b of enabledBlocks) {
+		for (const b of enabled) {
 			if (used + b.content.length > 60000) {
 				omitted++;
 				continue;
 			}
 			used += b.content.length;
-			parts.push("", `### ${b.name || b.id}`, b.content);
+			parts.push("", `### ${b.name || b.identifier}`, b.content);
 		}
 		if (omitted > 0) parts.push("", `（另有 ${omitted} 块超出篇幅，略）`);
 	}

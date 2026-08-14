@@ -3,7 +3,10 @@
  * - 开关 / 改字 → 立即进运行时（下一轮生效），**不写盘**
  * - 「保存」→ 写入预设文件
  * - 切换预设再切回 → 磁盘已保存版（未保存改动丢弃）
- * - 点条目展开可改名称 / 通道 / 正文
+ * - 点条目展开可改名称 / 正文（通道是 chatHistory 派生的位置，只读）
+ *
+ * 磁盘上存的是**酒馆原文**：这里发的是补丁（开关落 prompt_order、改字落 prompts），
+ * 梨园不认识的键原样留在文件里（见 src/preset-doc.ts）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,38 +16,16 @@ import {
 	apiPost,
 	apiPut,
 	downloadJson,
-	type ConvertReportItem,
+	type PresetBlockPatch,
 	type PresetBlockView,
 	type PresetResponse,
 	type PresetsResponse,
 } from "../api.ts";
 import { ConfirmButton, PanelStatus, SliderField, Toggle, useAction, usePanelData } from "./kit.tsx";
-import { SkillLibrary } from "./SkillLibrary.tsx";
 
 const CHANNEL_LABEL: Record<string, string> = {
-	system: "系统区",
-	postHistory: "末端注入",
-};
-
-/** v2 分拣投影（模型通读产物 manifest.v2.json，经 /api/preset-skills 下发；仅展示层，引擎送达仍走 v1） */
-type SortingV2 = {
-	preset?: string;
-	familySemantics?: Record<string, string>;
-	groups?: Array<{ name: string; rule: string; members: number[]; note?: string }>;
-	entries?: Array<{ idx: number; blockId: string; family: string; group?: string; note?: string }>;
-};
-
-/** v2 家族 → 页签归属（8/12 用户定案：skill 与提示词合并——凡送模的散文都是提示词，skill 页签让位给真 skill 库） */
-const V2_FAMILY_DEST: Record<string, "prompt" | "contract" | "param" | "del" | "archive"> = {
-	破限: "prompt",
-	配置: "prompt",
-	文风: "prompt",
-	NSFW: "prompt",
-	方法论: "prompt",
-	输出合约: "contract",
-	参数: "param",
-	删: "del",
-	留档: "archive",
+	system: "历史前",
+	postHistory: "历史后",
 };
 
 const SAMPLER_META: Array<{ key: string; min: number; max: number; step: number; hint: string }> = [
@@ -84,6 +65,8 @@ function toDraft(p: NonNullable<FullPresetResponse["preset"]>): DraftPreset {
 			channel: b.channel,
 			role: b.role,
 			enabled: b.enabled,
+			marker: b.marker === true,
+			...(typeof b.depth === "number" ? { depth: b.depth } : {}),
 			chars: b.content?.length ?? b.chars,
 			content: b.content ?? "",
 		})),
@@ -156,17 +139,13 @@ function PresetBlockEditor({
 						onChange={(e) => onChange({ name: e.target.value })}
 					/>
 					<label className="field-label" style={{ marginTop: 8 }}>
-						通道
+						位置
 					</label>
-					<select
-						className="panel-search"
-						value={block.channel}
-						disabled={busy}
-						onChange={(e) => onChange({ channel: e.target.value as DraftBlock["channel"] })}
-					>
-						<option value="system">系统区（进 system prompt）</option>
-						<option value="postHistory">末端注入（每轮导演备注）</option>
-					</select>
+					<div className="field-hint">
+						{CHANNEL_LABEL[block.channel] ?? block.channel}
+						{block.depth !== undefined ? ` · 深度注入 depth=${block.depth}` : ""}
+						——由本块在预设里相对 Chat History 槽位的位置决定，改顺序请在酒馆里改。
+					</div>
 					<label className="field-label" style={{ marginTop: 8 }}>
 						正文
 					</label>
@@ -207,35 +186,17 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	const [missing, setMissing] = useState<string | undefined>();
 	const [loadingDetail, setLoadingDetail] = useState(false);
 	const [loadError, setLoadError] = useState<string | null>(null);
-	const [report, setReport] = useState<ConvertReportItem[] | null>(null);
 	/** 防 apply 风暴：合并短时间多次改动 */
 	const applyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const pendingRef = useRef<PresetBlockPatch[]>([]);
+	const pendingSamplersRef = useRef<Record<string, number> | null>(null);
 	const draftRef = useRef(draft);
 	draftRef.current = draft;
 	const activeFile = files.data?.active ?? null;
 
-	// 有效性视图（8/11 用户定向）：条目按去向分组，不再按通道——判定来自预设 skill manifest
-	const fates = usePanelData(
-		() =>
-			apiGet<{
-				entries: Array<{ blockId: string; nature: string; fate: string }>;
-				sorting?: SortingV2 | null;
-			}>("/api/preset-skills"),
-		{ watchAgent: true, cacheKey: "/api/preset-skills" },
-	);
 	const contract = usePanelData(
 		() => apiGet<{ modules: Array<{ tag: string; source: string; form: string; hint?: string }>; declared: boolean; file: string }>("/api/output-contract"),
 		{ watchAgent: true, cacheKey: "/api/output-contract" },
-	);
-	const fateOf = useMemo(
-		() => new Map((fates.data?.entries ?? []).map((e) => [e.blockId, { nature: e.nature, fate: e.fate }])),
-		[fates.data],
-	);
-	// v2 分拣（有则按家族渲染，无则回落两分法）；preset 名对不上=数据陈旧，同样回落
-	const sorting = fates.data?.sorting ?? null;
-	const v2Of = useMemo(
-		() => new Map((sorting?.entries ?? []).map((e) => [e.blockId, e])),
-		[sorting],
 	);
 
 	const loadFromDisk = useCallback(async () => {
@@ -266,26 +227,28 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		void loadFromDisk();
 	}, [activeFile, files.data, loadFromDisk]);
 
+	/**
+	 * 发补丁而不是发全量：磁盘上存的是酒馆原文，开关只动 `prompt_order[].enabled`，
+	 * 改字只动 `prompts[].content`，梨园不认识的键原样留在文件里。
+	 */
 	const applyRuntime = useCallback(
-		(next: DraftPreset) => {
+		(patches: PresetBlockPatch[], samplers?: Record<string, number>) => {
+			pendingRef.current.push(...patches);
+			if (samplers) pendingSamplersRef.current = samplers;
 			if (applyTimer.current) clearTimeout(applyTimer.current);
 			applyTimer.current = setTimeout(() => {
+				// 同一块的多次改动按后写优先合并成一条
+				const merged = new Map<string, PresetBlockPatch>();
+				for (const p of pendingRef.current) merged.set(p.id, { ...merged.get(p.id), ...p });
+				const body: { blocks: PresetBlockPatch[]; samplers?: Record<string, number> } = {
+					blocks: [...merged.values()],
+				};
+				if (pendingSamplersRef.current) body.samplers = pendingSamplersRef.current;
+				pendingRef.current = [];
+				pendingSamplersRef.current = null;
 				void (async () => {
 					try {
-						await apiPut("/api/preset", {
-							preset: {
-								name: next.name,
-								samplers: next.samplers,
-								blocks: next.blocks.map((b) => ({
-									id: b.id,
-									name: b.name,
-									channel: b.channel,
-									role: b.role,
-									enabled: b.enabled,
-									content: b.content,
-								})),
-							},
-						});
+						await apiPut("/api/preset", body);
 					} catch (e) {
 						toast("error", e instanceof Error ? e.message : String(e));
 					}
@@ -295,13 +258,14 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		[toast],
 	);
 
+	/** 本地视图改动 + 同步一条补丁到运行时草稿 */
 	const patchDraft = useCallback(
-		(mutator: (d: DraftPreset) => DraftPreset) => {
+		(mutator: (d: DraftPreset) => DraftPreset, patches: PresetBlockPatch[], samplers?: Record<string, number>) => {
 			setDraft((prev) => {
 				if (!prev) return prev;
 				const next = mutator(prev);
 				setDirty(true);
-				applyRuntime(next);
+				applyRuntime(patches, samplers);
 				return next;
 			});
 		},
@@ -309,20 +273,40 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	);
 
 	const patchBlock = (id: string, patch: Partial<DraftBlock>) => {
-		patchDraft((d) => ({
-			...d,
-			blocks: d.blocks.map((b) => {
-				if (b.id !== id) return b;
-				const merged = { ...b, ...patch };
-				if (typeof patch.content === "string") merged.chars = patch.content.length;
-				return merged;
+		patchDraft(
+			(d) => ({
+				...d,
+				blocks: d.blocks.map((b) => {
+					if (b.id !== id) return b;
+					const merged = { ...b, ...patch };
+					if (typeof patch.content === "string") merged.chars = patch.content.length;
+					return merged;
+				}),
 			}),
-		}));
+			[
+				{
+					id,
+					...(typeof patch.enabled === "boolean" ? { enabled: patch.enabled } : {}),
+					...(typeof patch.name === "string" ? { name: patch.name } : {}),
+					...(typeof patch.content === "string" ? { content: patch.content } : {}),
+				},
+			],
+		);
 	};
 
-	/** 删块：从预设移除（立即进运行时，dirty，保存后写盘）。8/12 用户点名：提示词/状态栏都要能删。 */
+	const patchSamplers = (key: string, value: number) => {
+		setDraft((prev) => {
+			if (!prev) return prev;
+			const samplers = { ...prev.samplers, [key]: value };
+			setDirty(true);
+			applyRuntime([], samplers);
+			return { ...prev, samplers };
+		});
+	};
+
+	/** 删块：从预设整块移除（立即进运行时，dirty，保存后写盘）。8/12 用户点名：提示词/状态栏都要能删。 */
 	const removeBlock = (id: string) => {
-		patchDraft((d) => ({ ...d, blocks: d.blocks.filter((b) => b.id !== id) }));
+		patchDraft((d) => ({ ...d, blocks: d.blocks.filter((b) => b.id !== id) }), [{ id, remove: true }]);
 	};
 
 	const orderedSamplers = useMemo(() => {
@@ -335,87 +319,15 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		return { known, unknown };
 	}, [draft]);
 
-	/** 页签：参数 | 提示词（送模散文全量） | skill（真 skill 库编辑器） | 状态栏（输出合约） | 删（v2 判删审阅） */
-	const [tab, setTab] = useState<"samplers" | "prompt" | "skill" | "contract" | "del">("samplers");
+	/** 页签：参数 | 提示词（装配进提示词的全部块） | 状态栏（输出合约） */
+	const [tab, setTab] = useState<"samplers" | "prompt" | "contract">("samplers");
 
-	// 归并法（8/12 用户定案：skill 与提示词合并）——
-	// 存活看 fate（退场/仅规则提取＝失效，不送模不显示）；活着的一律归系统提示词。
-	const destOf = useCallback(
-		(blockId: string): "prompt" | "dead" => {
-			const info = fateOf.get(blockId);
-			if (!info) return "prompt"; // 无判定信息不隐藏（宁多显不误删）
-			if (!info.fate.includes("常驻") && !info.fate.includes("skill:")) return "dead";
-			return "prompt";
-		},
-		[fateOf],
-	);
-	const byDest = useMemo(() => {
-		const map = { prompt: [] as DraftBlock[], dead: [] as DraftBlock[] };
-		for (const b of draft?.blocks ?? []) map[destOf(b.id)].push(b);
+	/** 酒馆内置槽位（Chat History / Char Description…）单列——它们没有正文，只声明位置 */
+	const blocksByKind = useMemo(() => {
+		const map = { blocks: [] as DraftBlock[], markers: [] as DraftBlock[] };
+		for (const b of draft?.blocks ?? []) (b.marker ? map.markers : map.blocks).push(b);
 		return map;
-	}, [draft, destOf]);
-
-	// v2 家族视图：模型通读分拣在场且对得上当前预设时，页签内容按家族+互斥组渲染
-	const hasV2 = !!draft && !!sorting && v2Of.size > 0 && (sorting.preset ?? draft.name) === draft.name;
-	const v2Dest = useMemo(() => {
-		const map = {
-			prompt: [] as DraftBlock[],
-			contract: [] as DraftBlock[],
-			param: [] as DraftBlock[],
-			del: [] as DraftBlock[],
-			archive: [] as DraftBlock[],
-		};
-		if (!hasV2) return map;
-		for (const b of draft?.blocks ?? []) {
-			const fam = v2Of.get(b.id)?.family ?? "";
-			map[V2_FAMILY_DEST[fam] ?? "prompt"].push(b);
-		}
-		return map;
-	}, [draft, v2Of, hasV2]);
-	// 无 v2 时不该停在「删」页签
-	useEffect(() => {
-		if (tab === "del" && !hasV2) setTab("samplers");
-	}, [tab, hasV2]);
-
-	// AI 分拣进度（PLAN-PRESET-SORT）：导入/打开时拉一次，running 时轮询到收敛
-	type SortStatus = { status: "idle" | "running" | "done" | "failed" | "manual"; done?: number; total?: number; phase?: string; error?: string };
-	const [sortStatus, setSortStatus] = useState<SortStatus | null>(null);
-	const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-	const fetchSort = useCallback(async () => {
-		try {
-			const s = await apiGet<SortStatus>("/api/preset-sort/status");
-			setSortStatus(s);
-			if (s.status !== "running") {
-				if (pollRef.current) {
-					clearInterval(pollRef.current);
-					pollRef.current = null;
-				}
-				if (s.status === "done") fates.reload();
-			}
-		} catch {
-			// 端点不存在（server 未重启）等：静默，UI 回落无分拣条
-		}
-	}, [fates]);
-	useEffect(() => {
-		void fetchSort();
-	}, [activeFile, fetchSort]);
-	useEffect(() => {
-		if (sortStatus?.status === "running" && !pollRef.current) {
-			pollRef.current = setInterval(() => void fetchSort(), 1500);
-		}
-		return () => {
-			if (pollRef.current) {
-				clearInterval(pollRef.current);
-				pollRef.current = null;
-			}
-		};
-	}, [sortStatus?.status, fetchSort]);
-	const rerunSort = () =>
-		run(async () => {
-			await apiPost("/api/preset-sort/run", { force: true });
-			setSortStatus({ status: "running", done: 0, total: 0, phase: "启动" });
-			await fetchSort();
-		}, "已开始 AI 分拣");
+	}, [draft]);
 
 	const selectPreset = (file: string | null) =>
 		run(async () => {
@@ -430,22 +342,8 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 
 	const saveToDisk = () =>
 		run(async () => {
-			const d = draftRef.current;
-			if (!d) throw new Error("无预设可保存");
-			await apiPost("/api/preset/save", {
-				preset: {
-					name: d.name,
-					samplers: d.samplers,
-					blocks: d.blocks.map((b) => ({
-						id: b.id,
-						name: b.name,
-						channel: b.channel,
-						role: b.role,
-						enabled: b.enabled,
-						content: b.content,
-					})),
-				},
-			});
+			// 草稿已在运行时文件里（原文＋补丁），保存＝把它落到预设文件
+			await apiPost("/api/preset/save", {});
 			setDirty(false);
 			files.reload();
 		}, "预设已保存到文件");
@@ -458,14 +356,12 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 
 	const rename = () => {
 		if (!activeFile || !draft) return;
-		const name = prompt("新名字：", draft.name);
+		const name = prompt("新名字（＝新文件名）：", draft.name);
 		if (!name?.trim()) return;
 		void run(async () => {
 			await apiPost("/api/presets/rename", { file: activeFile, name: name.trim() });
-			// 重命名只改展示名：同步草稿名并 apply+提示保存
-			patchDraft((d) => ({ ...d, name: name.trim() }));
 			files.reload();
-		}, "显示名已改（记得点保存写入文件）");
+		}, "已重命名（预设名就是文件名）");
 	};
 
 	const removeActive = () => {
@@ -481,23 +377,7 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	const doExport = async () => {
 		if (!activeFile) return;
 		try {
-			// 导出当前草稿（含未保存）
-			const d = draftRef.current;
-			if (d) {
-				downloadJson(`${d.name || "preset"}.json`, {
-					name: d.name,
-					samplers: d.samplers,
-					blocks: d.blocks.map(({ id, name, channel, role, enabled, content }) => ({
-						id,
-						name,
-						channel,
-						role,
-						enabled,
-						content,
-					})),
-				});
-				return;
-			}
+			// 导出原文：酒馆能直接吃回去（未保存草稿请先点保存）
 			const r = await apiGet<{ name: string; json: unknown }>(`/api/presets/export?file=${encodeURIComponent(activeFile)}`);
 			downloadJson(`${r.name}.json`, r.json);
 		} catch (e) {
@@ -506,15 +386,16 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	};
 
 	const doImport = async (file: File) => {
-		setReport(null);
 		try {
 			const json = JSON.parse(await file.text()) as Record<string, unknown>;
-			const r = await apiPost<{ report: ConvertReportItem[]; blockCount: number; converted: boolean }>("/api/presets/import", {
+			const r = await apiPost<{ kind: "st" | "rp"; blockCount: number; enabledCount: number }>("/api/presets/import", {
 				name: file.name.replace(/\.json$/i, ""),
 				json,
 			});
-			if (r.converted) setReport(r.report);
-			toast("info", `已导入并启用（${r.blockCount} 个内容块${r.converted ? "，ST 预设已转换" : ""}）`);
+			toast(
+				"info",
+				`已导入并启用（${r.kind === "st" ? "酒馆原文原样存档" : "旧梨园格式"}：${r.blockCount} 条 · 启用 ${r.enabledCount}）`,
+			);
 			setDirty(false);
 			files.reload();
 		} catch (e) {
@@ -524,10 +405,10 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 
 	const toggleChannel = (blocks: DraftBlock[], enabled: boolean) => {
 		const ids = new Set(blocks.map((b) => b.id));
-		patchDraft((d) => ({
-			...d,
-			blocks: d.blocks.map((b) => (ids.has(b.id) ? { ...b, enabled } : b)),
-		}));
+		patchDraft(
+			(d) => ({ ...d, blocks: d.blocks.map((b) => (ids.has(b.id) ? { ...b, enabled } : b)) }),
+			blocks.map((b) => ({ id: b.id, enabled })),
+		);
 	};
 
 	return (
@@ -591,20 +472,6 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 								有未保存修改：已立即用于对话；切换预设会丢弃。点「保存」写入文件。
 							</div>
 						)}
-						{report && (
-							<details className="legacy-group" open>
-								<summary>转换分诊报告（{report.length} 项）</summary>
-								{report.map((r, i) => (
-									<div key={i} className="kv">
-										<span className="kv-k">{r.name || r.identifier}</span>
-										<span className="kv-v">
-											{r.action}
-											{r.contentChars > 0 ? ` · ${r.contentChars} 字` : ""}
-										</span>
-									</div>
-								))}
-							</details>
-						)}
 					</section>
 
 					<PanelStatus loading={loadingDetail} error={loadError} hasData={!!draft || !!missing} />
@@ -612,48 +479,6 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 
 					{draft && (
 						<>
-							{sortStatus && sortStatus.status !== "idle" && (
-								<div className={`preset-sort-bar sort-${sortStatus.status}`}>
-									{sortStatus.status === "running" && (
-										<span>
-											⏳ AI 分拣中…{sortStatus.phase ? ` ${sortStatus.phase}` : ""}
-											{sortStatus.total ? `（${sortStatus.done}/${sortStatus.total}）` : ""}
-										</span>
-									)}
-									{sortStatus.status === "done" && (
-										<>
-											<span>✓ AI 已分拣（模型逐块归类）</span>
-											<button className="act" disabled={busy} onClick={rerunSort} title="丢弃当前分类，让 AI 重新逐块判定">
-												重新分拣
-											</button>
-										</>
-									)}
-									{sortStatus.status === "manual" && (
-										<>
-											<span>✎ 手工基准分拣（人工通读校准）</span>
-											<button className="act" disabled={busy} onClick={rerunSort} title="用 AI 覆盖手工基准（会丢失人工校准）">
-												改用 AI 分拣
-											</button>
-										</>
-									)}
-									{sortStatus.status === "failed" && (
-										<>
-											<span title={sortStatus.error}>⚠ AI 分拣失败，已回落两分法</span>
-											<button className="act" disabled={busy} onClick={rerunSort}>
-												重试
-											</button>
-										</>
-									)}
-								</div>
-							)}
-							{sortStatus?.status === "idle" && (
-								<div className="preset-sort-bar sort-idle">
-									<span>{sortStatus.phase || "未分拣"}</span>
-									<button className="act" disabled={busy} onClick={rerunSort} title="让 AI 逐块把预设块归类到家族">
-										AI 分拣
-									</button>
-								</div>
-							)}
 							<div className="preset-tabs" role="tablist">
 								<button
 									type="button"
@@ -665,7 +490,7 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 									参数
 								</button>
 								{(() => {
-									const blocks = hasV2 ? v2Dest.prompt : byDest.prompt;
+									const blocks = blocksByKind.blocks;
 									const on = blocks.filter((b) => b.enabled).length;
 									return (
 										<button
@@ -683,38 +508,13 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 								<button
 									type="button"
 									role="tab"
-									aria-selected={tab === "skill"}
-									className={`preset-tab ${tab === "skill" ? "active" : ""}`}
-									onClick={() => setTab("skill")}
-								>
-									skill
-								</button>
-								<button
-									type="button"
-									role="tab"
 									aria-selected={tab === "contract"}
 									className={`preset-tab ${tab === "contract" ? "active" : ""}`}
 									onClick={() => setTab("contract")}
 								>
 									状态栏
-									<span className="preset-tab-count">
-										{(contract.data?.modules ?? []).length + (hasV2 ? v2Dest.contract.length : 0)}
-									</span>
+									<span className="preset-tab-count">{(contract.data?.modules ?? []).length}</span>
 								</button>
-								{hasV2 && (
-									<button
-										type="button"
-										role="tab"
-										aria-selected={tab === "del"}
-										className={`preset-tab ${tab === "del" ? "active" : ""}`}
-										onClick={() => setTab("del")}
-									>
-										删
-										<span className="preset-tab-count">
-											{v2Dest.del.filter((b) => b.enabled).length}/{v2Dest.del.length + v2Dest.archive.length}
-										</span>
-									</button>
-								)}
 							</div>
 
 							{tab === "samplers" && (
@@ -729,12 +529,7 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 										min={m.min}
 										max={m.max}
 										step={m.step}
-										onChange={(nv) =>
-											patchDraft((d) => ({
-												...d,
-												samplers: { ...d.samplers, [m.key]: nv },
-											}))
-										}
+										onChange={(nv) => patchSamplers(m.key, nv)}
 									/>
 								))}
 								{orderedSamplers.unknown.map(({ key, value }) => (
@@ -747,49 +542,25 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 											value={value}
 											onChange={(e) => {
 												const n = Number(e.target.value);
-												if (Number.isFinite(n)) {
-													patchDraft((d) => ({
-														...d,
-														samplers: { ...d.samplers, [key]: n },
-													}));
-												}
+												if (Number.isFinite(n)) patchSamplers(key, n);
 											}}
 										/>
 									</div>
 								))}
-								{hasV2 && v2Dest.param.length > 0 && (
-									<>
-										<div className="preset-chan-head" style={{ marginTop: 10 }}>
-											<span className="lore-meta">字数（二选一，规则提取进引擎目标）</span>
-										</div>
-										{v2Dest.param.map((b) => (
-											<PresetBlockEditor
-												key={b.id}
-												block={b}
-												busy={busy}
-												note={v2Of.get(b.id)?.note}
-												onChange={(patch) => patchBlock(b.id, patch)}
-												onDelete={() => removeBlock(b.id)}
-											/>
-										))}
-									</>
-								)}
 							</section>
 							)}
 
-							{tab === "skill" && <SkillLibrary toast={toast} />}
-
-							{tab === "prompt" && !hasV2 &&
+							{tab === "prompt" &&
 								(() => {
-									const blocks = byDest.prompt;
-									const totalChars = blocks.reduce((n, b) => n + (b.enabled ? b.content.length : 0), 0);
+									const blocks = blocksByKind.blocks;
+									const markers = blocksByKind.markers;
+									const onChars = blocks.reduce((n, b) => n + (b.enabled ? b.content.length : 0), 0);
 									const allOn = blocks.length > 0 && blocks.every((b) => b.enabled);
-									const deadChars = byDest.dead.reduce((n, b) => n + b.content.length, 0);
 									return (
 										<section className="sp-section">
 											<div className="preset-chan-head">
 												<span className="lore-meta">
-													{`系统提示词（原文直通，含破限/边界/文风/方法论）：${blocks.length} 块 · 启用 ${totalChars.toLocaleString()} 字`}
+													{`启用块原文按 prompt_order 原序装配进提示词：${blocks.length} 块 · 启用 ${onChars.toLocaleString()} 字`}
 												</span>
 												{blocks.length > 0 && (
 													<button className="act" disabled={busy} onClick={() => toggleChannel(blocks, !allOn)}>
@@ -797,7 +568,7 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 													</button>
 												)}
 											</div>
-											{blocks.length === 0 && <div className="sp-empty">无此去向的块。</div>}
+											{blocks.length === 0 && <div className="sp-empty">该预设没有内容块。</div>}
 											{blocks.map((b) => (
 												<PresetBlockEditor
 													key={b.id}
@@ -807,121 +578,34 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 													onDelete={() => removeBlock(b.id)}
 												/>
 											))}
-											{byDest.dead.length > 0 && (
-												<div className="field-hint">
-													另有 {byDest.dead.length} 块 / {deadChars.toLocaleString()} 字已失效不再送模（旧环境的
-													COT/验算/包装类程序内容，机制已覆盖）。文件仍在 skills/预设-*/blocks/，改 manifest 去向可复活。
-												</div>
+											{markers.length > 0 && (
+												<>
+													<div className="preset-chan-head" style={{ marginTop: 12 }}>
+														<span className="lore-meta">
+															<b>酒馆内置槽位</b> — 决定角色卡 / 世界书 / 对话历史插在哪一段，本身没有正文
+														</span>
+													</div>
+													{markers.map((b) => (
+														<div key={b.id} className="kv">
+															<span className="kv-k" style={{ opacity: b.enabled ? 1 : 0.5 }}>
+																{b.enabled ? "●" : "○"} {b.name || b.id}
+															</span>
+															<span className="kv-v">
+																{CHANNEL_LABEL[b.channel] ?? b.channel}
+																<Toggle
+																	checked={b.enabled}
+																	disabled={busy}
+																	onChange={(v) => patchBlock(b.id, { enabled: v })}
+																	
+																/>
+															</span>
+														</div>
+													))}
+												</>
 											)}
 										</section>
 									);
 								})()}
-
-							{tab === "prompt" && hasV2 &&
-								(() => {
-									// v2 家族渲染（8/12 合并定案：送模散文全在提示词页）；家族内按互斥组分节
-									const fams = ["破限", "配置", "文风", "NSFW", "方法论"];
-									const bucket = v2Dest.prompt;
-									return (
-										<section className="sp-section">
-											{fams.map((fam) => {
-												const blocks = bucket.filter((b) => v2Of.get(b.id)?.family === fam);
-												if (blocks.length === 0) return null;
-												const nOn = blocks.filter((b) => b.enabled).length;
-												const onChars = blocks.reduce((n, b) => n + (b.enabled ? b.content.length : 0), 0);
-												const grouped = new Map<string, DraftBlock[]>();
-												const loose: DraftBlock[] = [];
-												for (const b of blocks) {
-													const g = v2Of.get(b.id)?.group;
-													if (g) {
-														if (!grouped.has(g)) grouped.set(g, []);
-														grouped.get(g)!.push(b);
-													} else loose.push(b);
-												}
-												const groupOrder = (sorting?.groups ?? []).filter((g) => grouped.has(g.name));
-												return (
-													<div key={fam} className="preset-v2-family" style={{ marginBottom: 14 }}>
-														<div className="preset-chan-head">
-															<span className="lore-meta">
-																<b>{fam}</b> · {blocks.length} 块 · 启用 {nOn}（{onChars.toLocaleString()} 字）
-															</span>
-														</div>
-														{groupOrder.map((g) => (
-															<div key={g.name}>
-																<div className="lore-meta" style={{ margin: "8px 0 3px", opacity: 0.8 }}>
-																	〔{g.name} · {g.rule}〕{g.note ? ` ${g.note}` : ""}
-																</div>
-																{grouped.get(g.name)!.map((b) => (
-																	<PresetBlockEditor
-																		key={b.id}
-																		block={b}
-																		busy={busy}
-																		note={v2Of.get(b.id)?.note}
-																		onChange={(patch) => patchBlock(b.id, patch)}
-																		onDelete={() => removeBlock(b.id)}
-																	/>
-																))}
-															</div>
-														))}
-														{loose.length > 0 && groupOrder.length > 0 && (
-															<div className="lore-meta" style={{ margin: "8px 0 3px", opacity: 0.8 }}>〔开关 · 可多开〕</div>
-														)}
-														{loose.map((b) => (
-															<PresetBlockEditor
-																key={b.id}
-																block={b}
-																busy={busy}
-																note={v2Of.get(b.id)?.note}
-																onChange={(patch) => patchBlock(b.id, patch)}
-																onDelete={() => removeBlock(b.id)}
-															/>
-														))}
-													</div>
-												);
-											})}
-										</section>
-									);
-								})()}
-
-							{tab === "del" && hasV2 && (
-								<section className="sp-section">
-									{v2Dest.del.map((b) => (
-										<div
-											key={b.id}
-											style={{ display: "flex", flexDirection: "column", padding: "4px 0", borderBottom: "1px solid rgba(128,128,128,.15)" }}
-										>
-											<span className="lore-title" style={{ opacity: b.enabled ? 1 : 0.55 }}>
-												{b.enabled ? "●" : "○"} {b.name || b.id}
-											</span>
-											<span className="lore-meta">
-												{b.content.length.toLocaleString()} 字
-												{v2Of.get(b.id)?.note ? ` — ${v2Of.get(b.id)?.note}` : ""}
-											</span>
-										</div>
-									))}
-									{v2Dest.archive.length > 0 && (
-										<>
-											<div className="preset-chan-head" style={{ marginTop: 12 }}>
-												<span className="lore-meta"><b>留档</b> — 不送模，作为转换/分组的数据源</span>
-											</div>
-											{v2Dest.archive.map((b) => (
-												<div
-													key={b.id}
-													style={{ display: "flex", flexDirection: "column", padding: "4px 0" }}
-												>
-													<span className="lore-title" style={{ opacity: b.enabled ? 1 : 0.55 }}>
-														{b.enabled ? "●" : "○"} {b.name || b.id}
-													</span>
-													<span className="lore-meta">
-														{b.content.length.toLocaleString()} 字
-														{v2Of.get(b.id)?.note ? ` — ${v2Of.get(b.id)?.note}` : ""}
-													</span>
-												</div>
-											))}
-										</>
-									)}
-								</section>
-							)}
 
 							{tab === "contract" && (
 								<section className="sp-section">
@@ -939,31 +623,12 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 											</span>
 										</div>
 									))}
-									{hasV2 && v2Dest.contract.length > 0 && (
-										<>
-											<div className="preset-chan-head" style={{ marginTop: 12 }}>
-												<span className="lore-meta">
-													<b>状态栏 / 输出模块块</b>（分拣判为末尾格式块：状态栏/选项/点评等，可查看改字、开关、删除）：{v2Dest.contract.length} 块
-												</span>
-											</div>
-											{v2Dest.contract.map((b) => (
-												<PresetBlockEditor
-													key={b.id}
-													block={b}
-													busy={busy}
-													note={v2Of.get(b.id)?.note}
-													onChange={(patch) => patchBlock(b.id, patch)}
-													onDelete={() => removeBlock(b.id)}
-												/>
-											))}
-										</>
-									)}
 								</section>
 							)}
 						</>
 					)}
 					{!draft && !missing && !loadingDetail && (
-						<div className="sp-empty">当前未使用预设。可从上方「导入」一份 ST 预设（自动转换）。</div>
+						<div className="sp-empty">当前未使用预设。可从上方「导入」一份酒馆预设（原文原样存档，不做任何转换）。</div>
 					)}
 				</>
 			)}

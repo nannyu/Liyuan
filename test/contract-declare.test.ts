@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import type { RpPreset } from "../src/preset.ts";
+import { loadPresetDoc, type PresetDoc } from "../src/preset-doc.ts";
 import type { CharacterCard, LorebookEntry } from "../src/types.ts";
 import {
 	buildDeclarePrompt,
@@ -43,18 +43,19 @@ const makeEntry = (over: Partial<LorebookEntry> = {}): LorebookEntry => ({
 	...over,
 });
 
-const makePreset = (blocks: Array<{ id: string; name: string; content: string; enabled?: boolean }>): RpPreset => ({
-	name: "测试预设",
-	samplers: {},
-	blocks: blocks.map((b) => ({
-		id: b.id,
-		name: b.name,
-		channel: "postHistory" as const,
-		role: "system" as const,
-		content: b.content,
-		enabled: b.enabled ?? true,
-	})),
-});
+const makePreset = (blocks: Array<{ id: string; name: string; content: string; enabled?: boolean }>): PresetDoc =>
+	loadPresetDoc(
+		{
+			prompts: blocks.map((b) => ({ identifier: b.id, name: b.name, role: "system", content: b.content })),
+			prompt_order: [
+				{
+					character_id: 100001,
+					order: blocks.map((b) => ({ identifier: b.id, enabled: b.enabled ?? true })),
+				},
+			],
+		},
+		"测试预设",
+	);
 
 test("parseDeclared：宽松取 JSON（容忍围栏与闲话）；卫生检查死板执行", () => {
 	// 正常应答（带围栏与前后闲话）

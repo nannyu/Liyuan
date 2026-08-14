@@ -26,12 +26,6 @@ import {
 import { loadCodexEntries } from "../codex.ts";
 import { formatPanelIndex, formatPanelSnapshot, loadPanels } from "../panels.ts";
 import { dir } from "../paths.ts";
-import {
-	lookupBlockRule,
-	reportItemFor,
-	type AssemblyReportItem,
-} from "../preset-split.ts";
-import { splitWithManifest } from "../preset-skill.ts";
 import { formatRosterIndex, formatState, saveState } from "../state.ts";
 import { isBackstageText } from "../stance.ts";
 import type { LorebookEntry } from "../types.ts";
@@ -46,11 +40,11 @@ import {
 	type BranchEntryLike,
 } from "./assemble.ts";
 import {
+	assemblePresetAfter,
 	constantLoreOf,
-	evalPostHistoryBlocks,
 	loadStageConfig,
 	loadStageMaterials,
-	type ResidentPiece,
+	type AssembledPiece,
 	type StageMaterials,
 } from "./materials.ts";
 import {
@@ -588,24 +582,8 @@ export class StageEngine {
 		// 旧会话遗留的戏外轮：不注预设末端模板（不按剧情模板硬写）
 		const legacyBackstage = !!lastUserText && isBackstageText(lastUserText);
 
-		// postHistory 每拍求值（{{lastusermessage}} 在此生效）+ M-C 拆层分流：
-		// 常驻内容按原序进末端（M-R1 零归拢）；D/E 已在装载期静态入 skillPacks（此处跳过）；G/H/I 退场。
-		const phAll = legacyBackstage ? [] : (evalPostHistoryBlocks(materials, lastUserText) ?? []);
-		const phTail: ResidentPiece[] = [];
-		const phReport: AssemblyReportItem[] = [];
-		for (const b of phAll) {
-			if (!b.content.trim()) continue;
-			const rule = lookupBlockRule(materials.splitTable, b.name);
-			const pieces = splitWithManifest(materials.presetSkillManifest, b.id, rule, b.name ?? "", b.content);
-			for (const r of pieces.resident) {
-				phTail.push({ name: b.name, section: r.section, text: r.text });
-			}
-			phReport.push(reportItemFor(pieces, b.name, "postHistory", b.content.length));
-		}
-		if (materials.auditLinesDropped > 0 && materials.auditLinesDropped !== this.#warnedAuditDrop) {
-			this.#warnedAuditDrop = materials.auditLinesDropped;
-			console.error(`[stage] 拆层句级过滤：摘掉 ${materials.auditLinesDropped} 行验算指令`);
-		}
+		// 历史后段每拍重装（{{lastusermessage}} 在此生效）：原文原序直通末端，不再拆层。
+		const phAll = legacyBackstage ? [] : (assemblePresetAfter(materials, lastUserText) ?? []);
 		// M-C2：外部插件协议条目退场（世界书/卡内嵌通道 H 类）——每套组合只播报一次
 		if (materials.protocolDrops.length > 0) {
 			const key = materials.protocolDrops.map((d) => `${d.family}:${d.title}`).join("|");
@@ -619,8 +597,8 @@ export class StageEngine {
 			}
 		}
 
-		// 装配报告落盘（PLAN §5.3 可视化）：system 侧静态 + postHistory 侧每拍；内容变了才写
-		this.#writeAssemblyReport(cwd, materials, phReport, phTail);
+		// 装配报告落盘（PLAN §5.3 可视化）：装载期静态面 + 本拍历史后段；内容变了才写
+		this.#writeAssemblyReport(cwd, materials, phAll);
 
 		// M-A 工具组 + skill_read（M-R2 名称制：文件包+进口包非空才挂——不凭空点名）。
 		// 回合工作区 = 正文工件的落点；字数目标在此提取一次（数据，供末端注入）。
@@ -628,10 +606,7 @@ export class StageEngine {
 		// 可读名单：拉取档 skill 文件（常驻档已随 system 全文送达，不重复上单）+ 进口 topic 包。
 		// 必定读取（每轮）skill：受理门强制落笔前先读（认 frontmatter `每轮` 标志，不认具体名字）
 		const forcedSkills = materials.skillFiles.filter((f) => f.everyBeat).map((f) => f.name);
-		const skillNames = [
-			...materials.skillFiles.filter((f) => !f.resident).map((f) => f.name),
-			...materials.skillPacks.keys(),
-		];
+		const skillNames = materials.skillFiles.filter((f) => !f.resident).map((f) => f.name);
 		const readDeps = this.#toolDeps(lastUserText);
 		// MCP 外设（8/06 重接）：hub 里本会话已连接的工具并入清单。
 		// 空数组＝没启用/没连上，与「未注入 mcp 依赖」同效——都不上清单。
@@ -653,7 +628,7 @@ export class StageEngine {
 		];
 		const ws = createWorkspace();
 		const wsDeps: WorkspaceDeps = {
-			rules: extractDraftRules([...materials.presetRuleTexts, ...phAll.map((b) => b.content)]),
+			rules: extractDraftRules([...materials.presetRuleTexts, ...phAll.map((b) => b.text)]),
 			userName: config.userName,
 			charName: card.name,
 			baseState: state,
@@ -663,8 +638,9 @@ export class StageEngine {
 			card,
 			config,
 			constantLore: constantLoreOf(materials),
-			// M-R1：预设留驻内容原文原序直通（零归拢零引导语，PLAN-RECTIFY §2.1-9）
-			presetResident: materials.presetResident.map((p) => p.text),
+			// 预设装配段：原文原序，marker 已按预设作者的位置填入梨园材料
+			presetBefore: materials.presetBefore.map((p) => p.text),
+			declaredMarkers: materials.declaredMarkers,
 			// skill 素材位（M-R2）：常驻包全文 + 拉取包 L1 索引，无包零痕迹
 			skills: materials.skillFiles,
 			tools: tools.length > 0,
@@ -677,7 +653,7 @@ export class StageEngine {
 			activatedLore: activated,
 			card,
 			config,
-			presetTail: phTail.map((p) => p.text),
+			presetTail: phAll.map((p) => p.text),
 			languageMismatch,
 			panelIndex,
 			...(wsDeps.rules.wordRange ? { wordRange: wsDeps.rules.wordRange } : {}),
@@ -690,11 +666,11 @@ export class StageEngine {
 		// 谢幕注入消费合约——全仓库唯一提到状态栏的送模文案；合约空则不注入，拍自然收束。
 		let contractGen = contractFromCard(materials.statusBarFormats);
 		if (this.#deps.declareContract) {
-			const fp = declareFingerprint(card, materials.preset);
+			const fp = declareFingerprint(card, materials.presetDoc);
 			if (fp !== this.#declareFailedFp) {
 				const declared = await ensureDeclaredContract(cwd, fp, async () => {
 					ev.onActivity?.("装载声明：输出合约（本套卡+预设一次性）");
-					const p = buildDeclarePrompt(card, materials.preset);
+					const p = buildDeclarePrompt(card, materials.presetDoc);
 					// 声明是判断题：放开思考（透传会话档），maxTokens 给足防隐形思考烧光配额（8/02 教训）
 					return this.#sideText(
 						model,
@@ -763,7 +739,7 @@ export class StageEngine {
 		};
 		const thinking = this.#deps.getThinking?.();
 		if (thinking) options.reasoning = thinking;
-		const samplers = materials.preset?.samplers;
+		const samplers = materials.presetDoc?.samplers;
 		if (samplers && Object.keys(samplers).length > 0) {
 			options.onPayload = (payload: unknown, m: StageModelLike) => {
 				if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
@@ -1564,24 +1540,22 @@ export class StageEngine {
 	}
 
 	/** 装配报告写盘（.liyuan/preset-assembly.json）——每块预设去向可查；内容不变不写 */
-	#writeAssemblyReport(
-		cwd: string,
-		materials: StageMaterials,
-		phReport: AssemblyReportItem[],
-		phTail: ResidentPiece[],
-	): void {
+	#writeAssemblyReport(cwd: string, materials: StageMaterials, phAfter: AssembledPiece[]): void {
 		try {
-			// 常驻字数 = system 静态 + postHistory 每拍（两通道合计才是真常驻）；按拆层记账标签分列
-			const residentChars = { A: 0, B: 0, C: 0 };
-			for (const p of [...materials.presetResident, ...phTail]) residentChars[p.section] += p.text.length;
+			const chars = (a: AssembledPiece[]) => a.reduce((n, p) => n + p.text.length, 0);
 			const report = {
-				preset: materials.preset?.name ?? null,
-				splitTable: materials.splitTable?.key ?? null,
-				residentChars,
-				skillChars: Object.fromEntries([...materials.skillPacks].map(([t, s]) => [t, s.length])),
+				preset: materials.presetDoc?.name ?? null,
+				kind: materials.presetDoc?.kind ?? null,
+				/** 送模字数：历史前段 + 本拍历史后段（深度注入数据层保真，尚未消费） */
+				chars: {
+					before: chars(materials.presetBefore),
+					after: chars(phAfter),
+					depth: chars(materials.presetDepth),
+				},
+				declaredMarkers: [...materials.declaredMarkers],
 				// M-C2：世界书/卡内嵌通道被判死的外部插件协议条目（判据可回溯）
 				protocolDrops: materials.protocolDrops,
-				blocks: [...materials.presetAssembly, ...phReport],
+				blocks: materials.presetAssembly,
 			};
 			const json = JSON.stringify(report, null, "\t");
 			if (json === this.#lastAssemblyJson) return;

@@ -223,8 +223,16 @@ export interface StageSystemOptions {
 	card: CharacterCard;
 	config: RpConfig;
 	constantLore: LorebookEntry[];
-	/** M-R1：预设常驻内容（拆层产物），原文原序、零 harness 引导语（PLAN-RECTIFY §2.1-9） */
-	presetResident?: string[];
+	/**
+	 * 预设装配产物（历史前段）：原文、原序，marker 槽位已由预设作者的位置填入梨园材料。
+	 * 它是 system prompt 的**主体**，排在最前——harness 骨架殿后（PLAN-PRESET-PIPELINES §四之四）。
+	 */
+	presetBefore?: string[];
+	/**
+	 * 预设声明过的 marker 槽位 id。没声明的槽位，梨园按兜底版式补上——
+	 * 否则旧格式预设（无 marker）会让角色卡整个丢失。
+	 */
+	declaredMarkers?: Set<string>;
 	/** skill 素材位（M-R2）：常驻包正文进 system；拉取包进 L1 索引 */
 	skills?: Array<{ name: string; description: string; resident: boolean; body: string }>;
 	/** false = 不声明工具协议（M1 前过渡形态；M3 起默认开） */
@@ -240,7 +248,8 @@ export function buildStageSystemPrompt({
 	card,
 	config,
 	constantLore,
-	presetResident,
+	presetBefore,
+	declaredMarkers,
 	skills,
 	tools,
 	mcpTools,
@@ -248,29 +257,40 @@ export function buildStageSystemPrompt({
 	const macro: MacroContext = { charName: card.name, userName: config.userName };
 	const m = (s: string) => applyMacros(s, macro);
 	const sections: string[] = [];
+	const declared = declaredMarkers ?? new Set<string>();
 
+	// 1) 预设装配段：原文原序，零 harness 引导语。卡/世界书/人设已在预设作者指定的槽位里。
+	if (presetBefore && presetBefore.length > 0) sections.push(presetBefore.join("\n\n"));
+
+	// 2) 兜底：预设没声明的 marker 槽位，梨园按自己的版式补——补的是位置，不是措辞之外的话。
+	const charParts: string[] = [];
+	if (!declared.has("charDescription") && card.description) charParts.push(m(card.description));
+	if (!declared.has("charPersonality") && card.personality) charParts.push(`## 性格\n${m(card.personality)}`);
+	if (!declared.has("scenario") && card.scenario) charParts.push(`## 当前场景\n${m(card.scenario)}`);
+	if (!declared.has("dialogueExamples") && card.mesExample) {
+		charParts.push(`## 对白示例（仅供文风与语气参考，不是已发生的剧情）\n${m(card.mesExample)}`);
+	}
+	if (charParts.length > 0) sections.push([`# 你扮演的角色：${card.name}`, ...charParts].join("\n\n"));
+
+	if (!declared.has("personaDescription")) {
+		sections.push(
+			[
+				`# 用户扮演：${config.userName}`,
+				config.userPersona ? m(config.userPersona) : `（${config.userName} 的具体形象由用户在剧情中自行呈现）`,
+			].join("\n"),
+		);
+	}
+
+	if (!declared.has("worldInfoBefore") && !declared.has("worldInfoAfter") && constantLore.length > 0) {
+		const loreText = constantLore.map((e) => `- ${e.comment ? `【${e.comment}】` : ""}${m(e.content)}`).join("\n");
+		sections.push(`# 世界设定（常驻事实）\n${loreText}`);
+	}
+
+	// 3) harness 骨架殿后：梨园自己的协议面，与预设作者的字分开。
 	sections.push(
 		`# 舞台
 你在进行一场长篇沉浸式角色扮演：扮演 ${card.name}，以及剧情需要的一切配角、路人与世界本身。用户扮演 ${config.userName}。`,
 	);
-
-	const charParts: string[] = [`# 你扮演的角色：${card.name}`];
-	if (card.description) charParts.push(m(card.description));
-	if (card.personality) charParts.push(`## 性格\n${m(card.personality)}`);
-	if (card.scenario) charParts.push(`## 当前场景\n${m(card.scenario)}`);
-	if (card.mesExample) {
-		charParts.push(`## 对白示例（仅供文风与语气参考，不是已发生的剧情）\n${m(card.mesExample)}`);
-	}
-	sections.push(charParts.join("\n\n"));
-
-	const userParts: string[] = [`# 用户扮演：${config.userName}`];
-	userParts.push(config.userPersona ? m(config.userPersona) : `（${config.userName} 的具体形象由用户在剧情中自行呈现）`);
-	sections.push(userParts.join("\n"));
-
-	if (constantLore.length > 0) {
-		const loreText = constantLore.map((e) => `- ${e.comment ? `【${e.comment}】` : ""}${m(e.content)}`).join("\n");
-		sections.push(`# 世界设定（常驻事实）\n${loreText}`);
-	}
 
 	// M-R1（PLAN-RECTIFY §2.1-5）：纯协议，零扮演词。扮演的每个字都有署名主人（P1）。
 	if (tools !== false) {
@@ -315,11 +335,6 @@ ${index}`,
 - 标注【设定集索引】的消息是设定条目的标题索引${tools !== false ? "，内容未出现在【相关设定】时可用 `lorebook_search` 取原文" : ""}。
 - 标注【剧情记忆】的消息是历史正文检索片段，按需取用，勿整段照抄。`,
 	);
-
-	// 预设留驻区（M-R1）：原文、原序、原通道，零 harness 引导语（PLAN-RECTIFY §2.1-9）。
-	if (presetResident && presetResident.length > 0) {
-		sections.push(`# 预设指令（用户自备，按原序）\n${presetResident.join("\n\n")}`);
-	}
 
 	if (card.systemPrompt) {
 		sections.push(`# 卡作者附加指令（优先级最高）\n${m(card.systemPrompt)}`);

@@ -242,7 +242,7 @@ test("引擎循环：直出→代收+回执（零验收零测量，8/10）→模
 		// 过程条：代收 → 交稿；R7 仍守：写作阶段 system 不见禁词细则
 		assert.ok(activities.some((a) => a.includes("代收")));
 		assert.ok(activities.some((a) => a.includes("交稿")));
-		assert.ok(!String(contexts[0].systemPrompt).includes("词汇黑名单"), "初稿阶段不见禁词表");
+		assert.ok(String(contexts[0].systemPrompt).includes("词汇黑名单"), "预设启用块原文直通提示词（拆层退场）");
 	} finally {
 		reg.unregister();
 		rmSync(cwd, { recursive: true, force: true });

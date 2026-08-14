@@ -66,10 +66,10 @@ import {
 	loadConfig,
 	loadEffectivePreset,
 	loadMergedLore,
-	mergePresetPatches,
 	presetOverridePath,
 	writeJsonWithBackup,
 } from "./rest.ts";
+import { patchPresetRaw, presetDocView } from "../src/preset-doc.ts";
 import { parseCardFromSessionHead } from "./wire.ts";
 
 /** 剧情会话桥：main.ts 提供，助手工具经此只读剧情面 / 提交白名单写操作 */
@@ -350,12 +350,12 @@ function createStagehandTools(cwd: string, bridge: StoryBridge, hooks: Stagehand
 				);
 				const { assistantModel: _am, ...rest } = config;
 				lines.push(`\n【配置 liyuan.config.json】\n${JSON.stringify(rest, null, 2)}`);
-				if (preset.preset) {
-					const p = preset.preset;
-					const blocks = p.blocks
+				if (preset.doc) {
+					const p = preset.doc;
+					const blocks = presetDocView(p)
 						.map(
 							(b) =>
-								`- [${b.enabled ? "开" : "关"}] ${b.id}「${b.name}」 ${b.channel} · ${b.content.length} 字`,
+								`- [${b.enabled ? "开" : "关"}] ${b.id}「${b.name}」 ${b.marker ? "槽位" : b.channel} · ${b.chars} 字`,
 						)
 						.join("\n");
 					lines.push(
@@ -466,20 +466,21 @@ function createStagehandTools(cwd: string, bridge: StoryBridge, hooks: Stagehand
 				id: Type.Optional(Type.String({ description: "块 id（给出则返回该块全文）" })),
 			}),
 			async execute(_id, params) {
-				const { preset, path, fromOverride } = loadEffectivePreset(cwd);
-				if (!preset) return text(path ? `预设文件不存在：${path}` : "当前未配置预设文件", true);
+				const { doc, path, fromOverride } = loadEffectivePreset(cwd);
+				if (!doc) return text(path ? `预设文件不存在：${path}` : "当前未配置预设文件", true);
+				const view = presetDocView(doc, { full: true });
 				if (params.id) {
-					const b = preset.blocks.find((x) => x.id === params.id);
+					const b = view.find((x) => x.id === params.id);
 					if (!b) return text(`找不到预设块：${params.id}`, true);
 					return text(
-						`「${b.name}」（id=${b.id}，${b.channel}，${b.enabled ? "启用" : "停用"}，role=${b.role}）\n\n${b.content}`,
+						`「${b.name}」（id=${b.id}，${b.marker ? "酒馆内置槽位" : b.channel}，${b.enabled ? "启用" : "停用"}，role=${b.role}）\n\n${b.content ?? ""}`,
 					);
 				}
-				const blocks = preset.blocks
-					.map((b) => `- [${b.enabled ? "开" : "关"}] ${b.id}「${b.name}」 ${b.channel} · ${b.content.length} 字`)
+				const blocks = view
+					.map((b) => `- [${b.enabled ? "开" : "关"}] ${b.id}「${b.name}」 ${b.marker ? "槽位" : b.channel} · ${b.chars} 字`)
 					.join("\n");
 				return text(
-					`预设「${preset.name}」${fromOverride ? "（含未保存草稿）" : ""}\n采样参数：${JSON.stringify(preset.samplers)}\n${blocks}`,
+					`预设「${doc.name}」${fromOverride ? "（含未保存草稿）" : ""}\n采样参数：${JSON.stringify(doc.samplers)}\n${blocks}`,
 				);
 			},
 		}),
@@ -493,10 +494,10 @@ function createStagehandTools(cwd: string, bridge: StoryBridge, hooks: Stagehand
 				enabled: Type.Boolean({ description: "true=启用 false=停用" }),
 			}),
 			async execute(_id, params) {
-				const { preset, path } = loadEffectivePreset(cwd);
-				if (!preset) return text(path ? `预设文件不存在：${path}` : "当前未配置预设文件", true);
-				if (!preset.blocks.some((b) => b.id === params.id)) return text(`找不到预设块：${params.id}`, true);
-				const next = mergePresetPatches(preset, { blocks: [{ id: params.id, enabled: params.enabled }] });
+				const { doc, path } = loadEffectivePreset(cwd);
+				if (!doc) return text(path ? `预设文件不存在：${path}` : "当前未配置预设文件", true);
+				if (!doc.entries.some((b) => b.identifier === params.id)) return text(`找不到预设块：${params.id}`, true);
+				const next = patchPresetRaw(doc, { blocks: [{ id: params.id, enabled: params.enabled }] });
 				const ovr = presetOverridePath(cwd);
 				mkdirSync(join(cwd, ".liyuan"), { recursive: true });
 				writeFileSync(ovr, `${JSON.stringify(next, null, "\t")}\n`, "utf8");
