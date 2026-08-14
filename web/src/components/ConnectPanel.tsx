@@ -73,6 +73,8 @@ interface Draft {
 	streaming: boolean;
 	/** 原 compat 里流式开关以外的字段（面板不管，保存时原样带回） */
 	compatRest: Record<string, unknown>;
+	/** provider 上表单不编辑的其它字段（headers/User-Agent 等），保存时原样带回 */
+	providerExtra: Record<string, unknown>;
 }
 
 function emptyDraft(): Draft {
@@ -85,6 +87,7 @@ function emptyDraft(): Draft {
 		editId: null,
 		streaming: true,
 		compatRest: {},
+		providerExtra: {},
 	};
 }
 
@@ -135,6 +138,7 @@ function draftToConfig(d: Draft): LiyuanAgentConfig {
 			api: d.api.trim() || "openai-completions",
 			apiKey: d.apiKey.trim() || "placeholder",
 			models,
+			...(Object.keys(d.providerExtra).length > 0 && d.providerExtra),
 			...(Object.keys(compat).length > 0 && { compat }),
 		};
 	}
@@ -164,6 +168,13 @@ function draftFromConfig(id: string, name: string, config: LiyuanAgentConfig): D
 	const compatRest = { ...compat };
 	delete compatRest.streaming;
 	delete compatRest.safetyThreshold;
+	// provider 上除表单字段外的其余字段（headers 等）原样带回，避免「改一处顺手吞掉别的配置」
+	const providerExtra: Record<string, unknown> = { ...(p as Record<string, unknown>) };
+	delete providerExtra.baseUrl;
+	delete providerExtra.api;
+	delete providerExtra.apiKey;
+	delete providerExtra.models;
+	delete providerExtra.compat;
 	return {
 		editId: id,
 		name: pname || name,
@@ -173,6 +184,7 @@ function draftFromConfig(id: string, name: string, config: LiyuanAgentConfig): D
 		models,
 		streaming: compat?.streaming !== false,
 		compatRest,
+		providerExtra,
 	};
 }
 

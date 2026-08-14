@@ -210,6 +210,8 @@ export interface UpdateWire {
 	error?: string;
 	/** 启动脚本监护下运行（true 才能「立即重启」；直跑 node 只能下次启动时升级） */
 	supervised?: boolean;
+	/** Docker 部署：升级靠宿主机 git pull + rebuild，容器内不下载 zip（覆盖只写可写层、重建即丢） */
+	dockerDeploy?: boolean;
 }
 
 /** Server → Client 帧 */

@@ -226,14 +226,15 @@ export function seedProviderFromRuntime(input: {
 		reasoning?: boolean;
 		contextWindow?: number;
 		maxTokens?: number;
+		[key: string]: unknown;
 	}>;
 }): AgentProvider {
 	const models: AgentModelEntry[] = input.models.map((m) => {
-		const e: AgentModelEntry = { id: m.id };
-		if (m.name) e.name = m.name;
-		if (m.reasoning) e.reasoning = true;
-		if (m.contextWindow) e.contextWindow = m.contextWindow;
-		if (m.maxTokens) e.maxTokens = m.maxTokens;
+		const e: AgentModelEntry = { ...m, id: m.id };
+		// 清理 undefined 值
+		for (const k of Object.keys(e)) {
+			if (e[k] === undefined || e[k] === null) delete e[k];
+		}
 		return e;
 	});
 	const p: AgentProvider = { models };
@@ -412,6 +413,14 @@ export function enableProfile(cwd: string, agentDir: string, id: string): Liyuan
 	if (!rec) throw new Error(`配置不存在：${id}`);
 	const config = normalizeAgentConfig(rec.config);
 	materializeEnvKeysInConfig(config);
+	// 合并磁盘上已有的模型字段（用户手改的 compat / thinkingLevelMap / cost 等不被覆盖丢失）
+	const onDisk = loadAgentConfig(cwd).config;
+	for (const [name, provider] of Object.entries(config.providers)) {
+		const diskProvider = onDisk.providers[name];
+		if (diskProvider && Array.isArray(diskProvider.models) && Array.isArray(provider.models)) {
+			provider.models = mergeModelsById(diskProvider.models, provider.models);
+		}
+	}
 	saveAgentConfig(cwd, config);
 	syncAgentConfigToRuntime(cwd, agentDir, config);
 	saveActiveProfileId(cwd, id);

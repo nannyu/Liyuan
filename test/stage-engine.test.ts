@@ -610,6 +610,51 @@ test("引擎循环：draft_append 分段续写 → 中途查证 → draft_seal �
 	}
 });
 
+test("引擎：受理门拒掉的段落不上屏——被拒草稿不流式、接受后才上屏（8/13 定案）", async () => {
+	const { cwd, sm } = makeStage();
+	// 一张「每轮必读」skill，触发受理门
+	mkdirSync(join(cwd, "skills", "必读"), { recursive: true });
+	writeFileSync(
+		join(cwd, "skills", "必读", "SKILL.md"),
+		"---\nname: 必读\ndescription: 落笔前必读\neveryBeat: true\n每轮: true\n---\n\n每段写之前读我。",
+	);
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses([
+			// 第 1 段：没读 skill 就交 → 受理门拒绝（不转发的证明）
+			fauxAssistantMessage([fauxToolCall("draft_append", { segment: "被拒的一段，不该上屏。" })], { stopReason: "toolUse" }),
+			// 读完 skill 重交 → 接受
+			fauxAssistantMessage(
+				[fauxToolCall("skill_read", { name: "必读" }), fauxToolCall("draft_append", { segment: "被接受的一段。" })],
+				{ stopReason: "toolUse" },
+			),
+			// 封笔
+			fauxAssistantMessage([fauxToolCall("draft_seal", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage(""), // 记账/收束轮
+			fauxScribeEmpty(),
+		]);
+		const streamed: string[] = [];
+		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"), {
+			onDelta: (kind, d, draft) => {
+				if (kind === "text" && draft) streamed.push(d);
+			},
+		});
+		await engine.performTurn("我推门进屋。");
+
+		// 被拒段落绝不流式上屏；接受的段落才上屏
+		assert.ok(!streamed.some((s) => s.includes("被拒的一段")), "被受理门拒掉的段落不上屏");
+		assert.ok(streamed.some((s) => s.includes("被接受的一段")), "受理通过的段落才上屏");
+		// 定稿只有被接受的段落
+		const { history } = rebuildHistory(sm.getBranch() as BranchEntryLike[]);
+		const finalText = history[history.length - 1].text;
+		assert.ok(finalText.includes("被接受的一段"), "定稿含受理段落");
+		assert.ok(!finalText.includes("被拒的一段"), "定稿不含被拒段落");
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("引擎循环：draft_append 后忘了封笔 → 催告一轮 → 仍不封则兜底封笔，日程照走（M-E/M-R1）", async () => {
 	const { cwd, sm } = makeStage();
 	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });

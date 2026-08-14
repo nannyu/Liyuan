@@ -650,6 +650,14 @@ function loadOrSeedAgentConfig(host: RestHost): { path: string; exists: boolean;
 
 function persistAgentConfig(host: RestHost, config: LiyuanAgentConfig): LiyuanAgentConfig {
 	const normalized = normalizeAgentConfig(config);
+	// 合并磁盘上已有的模型字段（用户手改的 compat / thinkingLevelMap / cost 等不会被面板覆盖丢失）
+	const onDisk = loadAgentConfig(host.cwd).config;
+	for (const [name, provider] of Object.entries(normalized.providers)) {
+		const diskProvider = onDisk.providers[name];
+		if (diskProvider && Array.isArray(diskProvider.models) && Array.isArray(provider.models)) {
+			provider.models = mergeModelsById(diskProvider.models, provider.models);
+		}
+	}
 	saveAgentConfig(host.cwd, normalized);
 	syncAgentConfigToRuntime(host.cwd, host.agentDir(), normalized);
 	host.refreshModels();

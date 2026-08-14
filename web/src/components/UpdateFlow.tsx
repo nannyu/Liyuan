@@ -127,7 +127,7 @@ export function UpdateModal({
 						{update.error}
 					</div>
 				)}
-				{failed && (
+				{failed && !update.dockerDeploy && (
 					<label className="upd-mirror-row">
 						<span>下载镜像</span>
 						<input
@@ -140,10 +140,22 @@ export function UpdateModal({
 				)}
 				<div className="upd-foot">
 					<span className="upd-meta">
-						{fmtMB(update.assetSize)}
-						{update.assetSize ? " · " : ""}下载后 SHA256 校验
-						<br />
-						你的角色卡 / 会话 / 配置全部保留
+						{update.dockerDeploy ? (
+							<>
+								这是 Docker 部署，容器内无法自动升级。请在宿主机执行：
+								<br />
+								<code>git pull &amp;&amp; docker compose up -d --build</code>
+								<br />
+								角色卡 / 会话 / 配置在卷挂载里，重建不丢
+							</>
+						) : (
+							<>
+								{fmtMB(update.assetSize)}
+								{update.assetSize ? " · " : ""}下载后 SHA256 校验
+								<br />
+								你的角色卡 / 会话 / 配置全部保留
+							</>
+						)}
 					</span>
 					<div className="upd-actions">
 						{update.releaseUrl && (
@@ -151,9 +163,15 @@ export function UpdateModal({
 								查看发布页
 							</a>
 						)}
-						<button type="button" className="drawer-btn upd-primary" onClick={() => void startDownload()}>
-							{failed ? "重试下载" : "立即更新"}
-						</button>
+						{update.dockerDeploy ? (
+							<button type="button" className="drawer-btn upd-primary" onClick={onClose}>
+								知道了
+							</button>
+						) : (
+							<button type="button" className="drawer-btn upd-primary" onClick={() => void startDownload()}>
+								{failed ? "重试下载" : "立即更新"}
+							</button>
+						)}
 					</div>
 				</div>
 			</div>

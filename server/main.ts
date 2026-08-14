@@ -242,14 +242,17 @@ let updateCheck: UpdateCheckResult | null = null;
 let updateBusy = false;
 
 const UPDATE_SUPERVISED = process.env.LIYUAN_SUPERVISED === "1";
-const pushUpdate = () => broadcast({ type: "update", update: { ...updateState, supervised: UPDATE_SUPERVISED } });
+/** Docker 部署：升级靠宿主机 git pull + rebuild，容器内不下载 zip（覆盖只写可写层、重建即丢） */
+const IS_DOCKER = existsSync("/.dockerenv") || process.env.LIYUAN_DOCKER === "1";
+const pushUpdate = () =>
+	broadcast({ type: "update", update: { ...updateState, supervised: UPDATE_SUPERVISED, dockerDeploy: IS_DOCKER } });
 
 /** 启动后静默检查一次；失败不提示（manual 时才把 error 带给 UI） */
 const runUpdateCheck = async (manual: boolean): Promise<void> => {
 	// 已有暂存包：直接就绪态（跨重启持久；旧暂存版本低于当前版则丢弃）
 	const pending = readPendingUpdate(cwd);
 	if (pending) {
-		if (pending.version === APP_VERSION || pending.version < APP_VERSION) {
+		if (IS_DOCKER || pending.version === APP_VERSION || pending.version < APP_VERSION) {
 			discardPendingUpdate(cwd);
 		} else {
 			updateState = {
@@ -290,6 +293,7 @@ const runUpdateCheck = async (manual: boolean): Promise<void> => {
 
 /** 下载并暂存（进度限流 500ms 一帧）；完成后 ready，失败回 available 带 error */
 const startUpdateDownload = async (mirror?: string): Promise<void> => {
+	if (IS_DOCKER) throw new Error("Docker 部署请到宿主机执行 git pull && docker compose up -d --build");
 	if (updateBusy) throw new Error("已在下载中");
 	if (!updateCheck?.hasUpdate || !updateCheck.asset) throw new Error("没有可下载的更新");
 	updateBusy = true;
@@ -1111,6 +1115,7 @@ const restHost: RestHost = {
 			api: typeof sample.api === "string" ? sample.api : undefined,
 			envKey,
 			models: all.map((m) => ({
+				...(m as Record<string, unknown>),
 				id: m.id,
 				name: m.name || m.id,
 				reasoning: m.reasoning === true,

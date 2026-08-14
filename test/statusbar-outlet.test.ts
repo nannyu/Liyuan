@@ -42,6 +42,33 @@ test("mergeFinalText：旧行为不回归——纯元话语整段丢、纯格式
 	assert.equal(mergeFinalText("", "直出正文原样保留"), "直出正文原样保留");
 });
 
+test("mergeFinalText：<content> 整段重述正文 → 状态栏保留、正文不重复（8/13 实弹 B2）", () => {
+	const draft = "鎏金大厅的穹顶垂下一盏水晶吊灯。\n\n明月垂着眼。";
+	const text = `<state1>\n🕰️时间: "星元历2001年7月5日 夜"\n📝姓名: "怀瑾"\n</state1>\n<options>\n- 顺从回应\n</options>\n<thinking>\n开局按设定推进。\n</thinking>\n<content>\n${draft}\n</content>`;
+	const merged = mergeFinalText(draft, text);
+	assert.ok(merged.startsWith(draft), "正文以稿件为准");
+	assert.ok(merged.includes("<state1>"), "状态栏保留（此前 indexOf 把它切掉）");
+	assert.ok(merged.includes("<options>"), "options 保留");
+	assert.equal((merged.match(/鎏金大厅/g) ?? []).length, 1, "正文不重复");
+	assert.equal((merged.match(/<content>/g) ?? []).length, 0, "重述正文的空 <content> 块丢弃");
+});
+
+test("mergeFinalText：<content> 以正文末段开头续写 → 裁掉重复前缀（8/13 实弹 B1）", () => {
+	const draft = "第一段。\n\n她站在侧厅，月光从高窗斜斜落进来。";
+	const text = `<state1>x</state1>\n<content>\n${draft}\n\n怀瑾走近，说：「今晚跳得很好。」\n</content>`;
+	const merged = mergeFinalText(draft, text);
+	assert.ok(merged.includes("<state1>"));
+	assert.equal((merged.match(/她站在侧厅/g) ?? []).length, 1, "末段不重复");
+	assert.ok(merged.includes("「今晚跳得很好。」"), "content 里的新内容保留");
+});
+
+test("mergeFinalText：正文在前、格式块在后的旧形态不回归", () => {
+	const draft = "正文。";
+	const text = `${draft}\n\n<state1>x</state1>`;
+	const merged = mergeFinalText(draft, text);
+	assert.equal(merged, "正文。\n\n<state1>x</state1>");
+});
+
 test("formatTailStart：标签/围栏取更早者；都没有 → -1", () => {
 	assert.equal(formatTailStart("啰嗦两句<state1>x</state1>"), "啰嗦两句".length);
 	assert.equal(formatTailStart("```\nx\n```"), 0);

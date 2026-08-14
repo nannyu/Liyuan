@@ -403,6 +403,25 @@ export const dedupeIdenticalBlocks = (s: string): string => {
 		.trim();
 };
 
+/**
+ * 尾巴里 `<content>` 块以正文结尾文字开头（模型按卡格式在 `<content>` 里重述正文）时，
+ * 裁掉重复前缀——正文以稿件为准，定稿不得出现两遍。
+ * （8/13 实弹：B1 的 `<content>` 以正文末段开头 + 新内容；B2 的 `<content>` 整段重述正文。）
+ */
+const trimContentBodyRepeat = (body: string, inner: string): string => {
+	const d = body.trim();
+	const i0 = inner.trimStart();
+	if (!d || !i0) return inner;
+	for (let n = Math.min(d.length, i0.length); n > 0; n--) {
+		const suffix = d.slice(d.length - n);
+		if (i0.startsWith(suffix)) {
+			const rest = i0.slice(n).trim();
+			return rest ? `\n${rest}` : "";
+		}
+	}
+	return inner;
+};
+
 export const mergeFinalText = (draft: string, text: string): string => {
 	const d = draft.trim();
 	const t = text.trim();
@@ -410,12 +429,22 @@ export const mergeFinalText = (draft: string, text: string): string => {
 	if (!t || d === t) return d;
 	// 稿件已包含 text（模型边写边交，text 是半截）：稿件已是全量
 	if (d.includes(t)) return d;
-	// text 含稿件：取稿件之后的增量（尾巴在后）；不含：整段视作尾巴
-	const idx = t.indexOf(d);
-	const tail = idx >= 0 ? t.slice(idx + d.length) : t;
+	// 只认「稿件在尾巴开头」的续写增量（正文在前、尾巴在后）；稿件出现在尾巴中段
+	// 不切——格式块（state1/options 等）在正文之前，indexOf 会把它当「增量起点」把
+	// 前面的格式块一起切掉（8/13 实弹：<state1>…<content>正文</content>，状态栏全丢）。
+	let tail = t;
+	if (t.startsWith(d)) tail = t.slice(d.length);
 	const from = formatTailStart(tail);
 	if (from < 0) return d;
-	return dedupeIdenticalBlocks([d, tail.slice(from).trim()].filter(Boolean).join("\n\n"));
+	// 尾巴里 `<content>` 重述的正文裁掉（正文以稿件为准）
+	const tailPart = tail
+		.slice(from)
+		.trim()
+		.replace(/<content>([\s\S]*?)<\/content>/g, (whole, inner: string) => {
+			const trimmed = trimContentBodyRepeat(d, inner);
+			return trimmed ? `<content>${trimmed}</content>` : "";
+		});
+	return dedupeIdenticalBlocks([d, tailPart].filter(Boolean).join("\n\n"));
 };
 
 export class StageEngine {
@@ -486,8 +515,27 @@ export class StageEngine {
 	}
 
 	async #turn(userText: string | null): Promise<StageTurnEndInfo> {
-		const { cwd, events: ev = {} } = this.#deps;
+		const { cwd, events: rawEv = {} } = this.#deps;
 		const sm = this.#deps.getSessionManager();
+
+		// ---- 全流程文字留档 ----
+		// 前端能看到的每一个字、每一次工具调用/回执、每一次注入，按时序全记。
+		const beatLog: Array<{ ts: number; ev: string; data: string }> = [];
+		const blog = (event: string, data: string) => beatLog.push({ ts: Date.now(), ev: event, data });
+		// 拦截所有发往前端的事件
+		const ev: typeof rawEv = {
+			...rawEv,
+			onDelta: (kind, delta, draft, reset) => {
+				blog(draft ? "draft_delta" : kind === "thinking" ? "thinking" : "text", delta);
+				rawEv.onDelta?.(kind, delta, draft, reset);
+			},
+			onStreamClear: () => { blog("stream_clear", ""); rawEv.onStreamClear?.(); },
+			onDraftResync: (segs) => { blog("draft_resync", segs.join("\n---\n")); rawEv.onDraftResync?.(segs); },
+			onActivity: (d) => { blog("activity", d); rawEv.onActivity?.(d); },
+			onNotify: (lv, t) => { blog("notify", `[${lv}] ${t}`); rawEv.onNotify?.(lv, t); },
+		};
+		// 工具调用/回执由 agentLoop 内记录（见下方 blog 透传）
+		const _blog = blog; // 透传给 agentLoop 用
 
 		// 素材现读：改卡/改预设/挂书即时生效
 		const materials = loadStageMaterials(cwd);
@@ -772,6 +820,7 @@ export class StageEngine {
 				skillNames,
 				forcedSkills,
 				...(curtain ? { curtain } : {}),
+				_blog,
 			});
 			if (turn.final) final = turn.final;
 			if (turn.errored) errored = turn.errored;
@@ -794,6 +843,12 @@ export class StageEngine {
 		// draft_write 只交了正文，屏上流式见过三样、落树只剩一样）。故此处**合并**：
 		// 稿件为主体，text 里**格式特征**的尾巴补回（纯文本闲聊不进正文）。
 		const finalText = mergeFinalText(ws.draft, ws.draft.trim() ? loopTail : text);
+
+		// 全流程文字留档：beatLog 时序 + merge 四件全部落进 session JSONL
+		_blog("merge_input_draft", ws.draft);
+		_blog("merge_input_tail", loopTail);
+		_blog("merge_output", finalText);
+		sm.appendCustomEntry("rp-text-debug", { beatLog, draft: ws.draft, loopTail, finalText });
 
 		// 落树：正文以定稿为准（保留思考块，剥离工具调用轨迹）；纯错误/空拍不落
 		let entryId: string | undefined;
@@ -986,8 +1041,21 @@ export class StageEngine {
 		forcedSkills: string[];
 		/** 谢幕注入文案（输出合约非空才有；无 = 不注入，拍自然收束） */
 		curtain?: string;
+		/** 全流程文字留档 */
+		_blog?: (event: string, data: string) => void;
 	}): Promise<{ final: AssistantMsgLike | null; errored?: string; text: string; tailText?: string }> {
-		const ev = this.#deps.events ?? {};
+		const rawEv2 = this.#deps.events ?? {};
+		const blog = o._blog ?? (() => {});
+		const ev: typeof rawEv2 = {
+			...rawEv2,
+			onDelta: (kind, delta, draft, reset) => {
+				blog(draft ? "draft_delta" : kind === "thinking" ? "thinking" : "text", delta);
+				rawEv2.onDelta?.(kind, delta, draft, reset);
+			},
+			onStreamClear: () => { blog("stream_clear", ""); rawEv2.onStreamClear?.(); },
+			onDraftResync: (segs) => { blog("draft_resync", segs.join("\n---\n")); rawEv2.onDraftResync?.(segs); },
+			onActivity: (d) => { blog("activity", d); rawEv2.onActivity?.(d); },
+		};
 		const readDeps = o.readDeps;
 		// 走 tools.ts 派发的工具（统一层世界书族/向量库族 + 台上读侧两件）；其余归工作区执行器。
 		// 统一层含写侧（lorebook_write/toggle、memory_add/delete），但它们写的是设定集/记忆库
@@ -1007,6 +1075,8 @@ export class StageEngine {
 		// 写账工具（记账轮的结构信号——§2.3：判据必须是结构信号，禁止文本识别）
 		const LEDGER_TOOLS = new Set(["world_state_update", "panel_write", "panel_close"]);
 		const convo = [...o.messages];
+		// 注入留档：所有 convo.push(inject(...)) 改用此函数，自动记录注入文字
+		const inject = (text: string) => { blog("injection", text); return nowMsg(text); };
 		let last: AssistantMsgLike = o.first;
 		let text = "";
 		let nudged = false; // 空手逼稿只给一轮机会，防空转
@@ -1048,24 +1118,24 @@ export class StageEngine {
 					if (!o.ws.sealed && o.ws.appends > 0 && !sealNudged) {
 						// 催封笔（§2.4，只给一次）
 						sealNudged = true;
-						convo.push(nowMsg(`已续写 ${o.ws.appends} 段未封笔。写完就 draft_seal，没写完接着写。`));
+						convo.push(inject(`已续写 ${o.ws.appends} 段未封笔。写完就 draft_seal，没写完接着写。`));
 					} else {
 						// 停手分支补判定（8/12）：模型勾完路标后直接停手（不调 seal、不调工具），
 						// 工具轮判定分支只跑在模型还在调工具时，停手分支原先整个没有判定逻辑——
 						// ask 裁决席位同样消失。兜底封笔前补一次（verdictInjected 守卫防循环）。
 						if (!verdictInjected && o.ws.plan.length > 0 && draftBodyCharsOf(o.ws) > 0) {
 							verdictInjected = true;
-							convo.push(nowMsg(verdictInjection(o.ws, o.wsDeps.userName, o.wsDeps.rules.wordRange)));
+							convo.push(inject(verdictInjection(o.ws, o.wsDeps.userName, o.wsDeps.rules.wordRange)));
 						} else {
 							// 兜底封笔（催告已给过/全量稿天然封笔）→ 记账 → 谢幕：停手不越站
 							if (!o.ws.sealed) runWriteTool(o.ws, o.wsDeps, "draft_seal", {});
 							if (!ledgerDone && !ledgerInjected && o.ws.patches.length === 0 && o.ws.panelWrites === 0) {
 								ledgerInjected = true;
-								convo.push(nowMsg(LEDGER_INJECTION));
+								convo.push(inject(LEDGER_INJECTION));
 							} else if (o.curtain && !curtainInjected) {
 								ledgerDone = true;
 								curtainInjected = true;
-								convo.push(nowMsg(o.curtain));
+								convo.push(inject(o.curtain));
 							} else {
 								break; // 日程走完：本拍收束
 							}
@@ -1082,19 +1152,20 @@ export class StageEngine {
 						o.ws.strayText = "";
 						ev.onActivity?.(r.ok ? "直出正文已代收为 draft_write" : "直出正文代收失败");
 						convo.push(last);
-						convo.push(nowMsg("正文已代收为 draft_write。需要改就重交，不需要就结束。"));
+						convo.push(inject("正文已代收为 draft_write。需要改就重交，不需要就结束。"));
 					} else {
 						// 空手停笔（实弹三拍 0 字正文的病灶）：逼稿一次，仍空手才认栽
 						if (nudged) break;
 						nudged = true;
 						convo.push(last);
-						convo.push(nowMsg("你还没有落笔。用 draft_append 演出，或 draft_write 一次交完，否则本拍无产出。"));
+						convo.push(inject("你还没有落笔。用 draft_append 演出，或 draft_write 一次交完，否则本拍无产出。"));
 					}
 				}
 			} else {
 				convo.push(last);
 				for (const call of calls) {
 					const name = call.name ?? "";
+					blog("tool_call", `${name}: ${JSON.stringify(call.arguments ?? {})}`);
 					let r: ToolRunResult | MediaStageResult;
 					// P7：ask 工具——弹出选择卡等用户应答，答案作为新输入回喂模型。
 					// 用户停止（undefined）→ 本拍收束：不再续轮，直接以现稿定稿。
@@ -1203,6 +1274,25 @@ export class StageEngine {
 									? await this.#runReadTool(o, readDeps, name, call.arguments ?? {})
 									: runWriteTool(o.ws, o.wsDeps, name, call.arguments ?? {});
 						}
+					// 8/13 定案：稿件只在**被受理后**才上屏（转发器已不再生成时抢跑）——
+					// 被受理门拒掉的段落永远不流式，屏上正文 = 最终正文。
+					// 模型已走 text_delta 直出过的（先写正文再交稿）不重复转发，避免双份。
+					if ((name === "draft_append" || name === "draft_write") && r.ok !== false) {
+						const content = name === "draft_append" ? call.arguments?.segment : call.arguments?.content;
+						if (typeof content === "string" && content.trim()) {
+							const curText = (last.content ?? [])
+								.filter(
+									(c): c is { type: "text"; text: string } =>
+										c.type === "text" && typeof (c as { text?: unknown }).text === "string",
+								)
+								.map((c) => c.text)
+								.join("");
+							const shown = `${o.directText}${text}${curText}`;
+							if (!shown.includes(content.trim())) {
+								ev.onDelta?.("text", content, true, name === "draft_write");
+							}
+						}
+					}
 					// 媒体交付要落成 toolResult 条目（wire 只认树上的 toolResult 出媒体帧）——
 					// 台上引擎默认剥离工具轨迹，故在此单独收集，谢幕后随正文一起落树。
 					const mediaDetails = (r as MediaStageResult).details;
@@ -1228,6 +1318,7 @@ export class StageEngine {
 					// 时间线：工具按调用位置入档（draft_write/edit 的正文另由 #recordDraft 记）
 					recordSegment(o.ws, { kind: "tool", activity: { kind: "tool_start", name, detail: r.activity ?? "" } });
 					if (r.activity) ev.onActivity?.(r.activity);
+					blog("tool_result", `${name}: ${r.text}`);
 					convo.push({
 						role: "toolResult",
 						toolCallId: call.id,
@@ -1272,7 +1363,7 @@ export class StageEngine {
 							if (o.ws.patches.length > 0 || o.ws.panelWrites > 0) ledgerDone = true;
 							else {
 								ledgerInjected = true;
-								convo.push(nowMsg(LEDGER_INJECTION));
+								convo.push(inject(LEDGER_INJECTION));
 							}
 						} else if (!ledgerCallThisRound) {
 							ledgerDone = true; // 记账轮结束（模型停止调用写账工具）
@@ -1280,7 +1371,7 @@ export class StageEngine {
 					}
 					if (ledgerDone && o.curtain && !curtainInjected) {
 						curtainInjected = true;
-						convo.push(nowMsg(o.curtain));
+						convo.push(inject(o.curtain));
 					}
 				} else if (o.ws.plan.length > 0 || o.ws.draft.trim()) {
 					const allDone = o.ws.plan.length > 0 && o.ws.plan.every((s) => s.done);
@@ -1288,7 +1379,7 @@ export class StageEngine {
 					// 勾完但没落笔 → 继续进度行，判定等正文真出现
 					if (allDone && !verdictInjected && draftBodyCharsOf(o.ws) > 0) {
 						verdictInjected = true;
-						convo.push(nowMsg(verdictInjection(o.ws, o.wsDeps.userName, o.wsDeps.rules.wordRange)));
+						convo.push(inject(verdictInjection(o.ws, o.wsDeps.userName, o.wsDeps.rules.wordRange)));
 					} else {
 						replaceProgressLine(convo, progressLine(o.ws, o.wsDeps.rules.wordRange, o.skillNames, o.forcedSkills));
 					}
@@ -1303,7 +1394,7 @@ export class StageEngine {
 			else {
 				// 触阀收场（D16）：收场句保留；状态栏点名并入谢幕注入（未给过则在此并入）
 				const close = "【收场】本拍轮次已达上限，工具已收起，就此收场。";
-				convo.push(nowMsg(o.curtain && !curtainInjected ? `${close}\n\n${o.curtain}` : close));
+				convo.push(inject(o.curtain && !curtainInjected ? `${close}\n\n${o.curtain}` : close));
 				curtainInjected = true;
 			}
 
@@ -1362,38 +1453,10 @@ export class StageEngine {
 	 * 已经发生的事，续写不能把它擦掉重排（那正是分段续写要消除的体验）。
 	 */
 	#draftForwarder(): (e: StageStreamEvent) => void {
-		const ev = this.#deps.events ?? {};
-		const sent = new Map<number, number>();
-		const forward = (idx: number, content: unknown, append = false) => {
-			if (typeof content !== "string") return;
-			const prev = sent.get(idx) ?? 0;
-			if (content.length <= prev) return;
-			// draft=true：稿件流是替换语义（重交不叠加）——与 runWriteTool 的
-			// replaceDraftSegment 同语义，wire 层透传给前端时间线。
-			// reset=true：本次 draft_write 调用的首个分片——前端用它清掉旧稿。
-			const isFirst = !append && !sent.has(idx);
-			ev.onDelta?.("text", content.slice(prev), true, isFirst);
-			sent.set(idx, content.length);
-		};
-		/** 取正文参数：draft_write 用 content，draft_append 用 segment */
-		const pick = (name: string | undefined, args: Record<string, unknown> | undefined) => {
-			if (name === "draft_write") return { text: args?.content, append: false };
-			if (name === "draft_append") return { text: args?.segment, append: true };
-			return undefined;
-		};
-		return (e) => {
-			const idx = e.contentIndex;
-			if (typeof idx !== "number") return;
-			if (e.type === "toolcall_delta") {
-				const block = e.partial?.content?.[idx];
-				if (block?.type !== "toolCall") return;
-				const p = pick(block.name, block.arguments);
-				if (p) forward(idx, p.text, p.append);
-			} else if (e.type === "toolcall_end") {
-				const p = pick(e.toolCall?.name, e.toolCall?.arguments);
-				if (p) forward(idx, p.text, p.append);
-			}
-		};
+		// 8/13 定案：稿件内容不再在生成时抢跑转发——被受理门拒掉的段落会提前上屏、
+		// 造成「屏上正文 ≠ 最终正文」（实弹：被拒草稿重复可见）。稿件上屏改到
+		// agentLoop 受理成功后统一转发（见 runWriteTool 调用点），这里恒为空操作。
+		return () => {};
 	}
 
 	/**
