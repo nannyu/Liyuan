@@ -54,15 +54,14 @@ assets/gen/
 Thumbs.db
 
 # local-only assets (personal / copyright cards — keep defaults only)
-assets/cards/凡人*
-assets/cards/大乾*
-assets/cards/-.png
-assets/lorebooks/大乾*
-assets/lorebooks/第九*
-assets/cards/Living With Slaves.png
-assets/cards/淫宫*
-assets/lorebooks/Living With Slaves.json
-assets/lorebooks/淫宫*
+# 白名单式。原先按名字点名，漏掉 4 张卡 + 8 个世界书（`assets/cards/凡人*` 匹配
+# 不到 `《凡人修仙传V10.9》…`，`assets/lorebooks/淫宫*` 匹配不到 `淫乱仙侠.json`），
+# 一次 git add -A 就把版权内容提交进公开仓库。改为默认全忽略、只放行已入库的，
+# 与 pack-release.ps1「只留 default_* 卡、世界书全清」同口径。
+assets/cards/*
+!assets/cards/default_*
+assets/lorebooks/*
+!assets/lorebooks/Mistvale.json
 assets/presets/
 assets/ab-test/
 assets/import-test/
@@ -78,6 +77,27 @@ white-screen-check.png
 
 # local VPS / gateway debug scripts (personal ops, not product)
 scripts/_*
+
+# 根级排查脚手架（下划线约定）+ 旧实验目录 + 调试截图
+# 与 pack-release.ps1 的 $dropGlobs 同口径（那里已有 "_*"，注释写着 root-level
+# dev scratch）——两处用同一套约定，别再各自点名。锚定根级 `/_*` 而非 `_*`，
+# 否则会波及已入库的 scripts/_privacy_scan.py。
+/_*
+/scratch/
+/summaries/
+/output/
+/persist/
+/liyuan-*.png
+# 同 $dropGlobs：内部调试脚本不随包、也不入库（已入库的同名前缀文件不受影响）
+scripts/build-fanren-*.mjs
+scripts/check-*.mjs
+scripts/debug-*.mjs
+scripts/find-*.mjs
+scripts/live-*.mjs
+scripts/probe-*.mjs
+!scripts/probe-backstage.mjs
+scripts/verify-*.mjs
+scripts/write-*.mjs
 
 # optional: keep web/dist for easier clone-and-run; uncomment to force rebuild
 # web/dist/
