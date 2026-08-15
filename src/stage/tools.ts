@@ -97,8 +97,8 @@ export function writeTools(language: string): StageTool[] {
 			description:
 				`列出这一拍要演的几步（${language}）——落笔前先在这里构思。` +
 				`每条写**这一步发生什么**，一句话的**抽象路标**（如「被值守弟子拦下」「褪衣取砚」），` +
-				`不写这一步怎么演（动作细节、神态、情绪、对白留给演到那一段时再想），也不写字数。` +
-				`2~8 条，几条就写几段。列路标时按本拍总字数把篇幅分配到各步（几步分几份，每段心里有数）。` +
+				`不写这一步怎么演（动作细节、神态、情绪、对白留给演到那个路标时再想），也不写字数。` +
+				`2~8 条。列路标时按本拍总字数把篇幅分配到各步（几步分几份，每个路标心里有数）。` +
 				`这是草图不是剧本：演到中途剧情走岔了，随时重调本工具改写剩下的步骤。`,
 			parameters: {
 				type: "object",
@@ -115,7 +115,7 @@ export function writeTools(language: string): StageTool[] {
 		{
 			name: "beat_step_done",
 			description:
-				"勾掉计划里已经演完的一条（写完一段就勾一条；一段盖过几条就连着勾几条，不必分轮）。" +
+				"勾掉计划里已经演完的一条（演完一个路标就勾一条；一段盖过几条就连着勾几条，不必分轮）。" +
 				"返回更新后的清单与剩余条数。",
 			parameters: {
 				type: "object",
@@ -128,17 +128,17 @@ export function writeTools(language: string): StageTool[] {
 		{
 			name: "draft_append",
 			description:
-				`往下演一段（${language}）——你落笔的方式。` +
+				`往下演一个路标（${language}）——你落笔的方式。` +
 				`在现稿末尾追加，不覆盖已写部分：交出去的就是已经发生的事，不会被打回。` +
-				`落笔前先在思考里想清这段的戏（人物此刻的状态、动作、对白、情绪），并回看已写内容重新评估：` +
+				`落笔前先思考剧情、构思文字，再书写正文。随后判断：` +
 				`接下来要不要 ask 用户、剩余路标是否需要重拟、戏是否到停点。` +
-				`一段大约一个自然段就交。全部演完调用 draft_seal 收笔。`,
+				`演完一个路标就交。全部演完调用 draft_seal 收笔。`,
 			parameters: {
 				type: "object",
 				properties: {
 					segment: {
 						...STR,
-						description: "这一段正文（一个自然段，不含状态栏等格式区块）",
+						description: "这一个路标的正文（不含状态栏等格式区块）",
 					},
 				},
 				required: ["segment"],
@@ -149,7 +149,7 @@ export function writeTools(language: string): StageTool[] {
 			description:
 				`一次交完整拍正文（${language}），全量替换语义（覆盖上一稿）。` +
 				`只用于**这一拍没有戏**的时候：用户只是寒暄、确认、应一声，场面没有动。` +
-				`有戏的一拍用 draft_append 一段一段演。` +
+				`有戏的一拍用 draft_append 一个路标一个路标演。` +
 				`先落笔，再按验收报告改。` +
 				`**已有稿之后的局部修改一律用 draft_edit 定点改，不要重交全文。**`,
 			parameters: {
@@ -162,7 +162,7 @@ export function writeTools(language: string): StageTool[] {
 			name: "draft_seal",
 			description:
 				"封笔：声明正文已全部写完，返回完整稿的验收事实（字数/文面/主权）。" +
-				"分段续写（draft_append）结束后必须调用本工具，否则本拍没有最终正文。",
+				"分路标续写（draft_append）结束后必须调用本工具，否则本拍没有最终正文。",
 			parameters: { type: "object", properties: {}, required: [] },
 		},
 		{

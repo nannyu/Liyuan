@@ -597,7 +597,7 @@ test("引擎循环：draft_append 分段续写 → 中途查证 → draft_seal �
 		assert.ok(streamed.includes("山门外的雪落了一夜。"), "第一段流式上屏");
 		assert.ok(streamed.includes("背誓不得入祠"), "第二段流式上屏");
 		assert.ok(
-			activities.some((a) => a.includes("续写第 1 段")) && activities.some((a) => a.includes("续写第 2 段")),
+			activities.some((a) => a.includes("演完第 1 个路标")) && activities.some((a) => a.includes("演完第 2 个路标")),
 			"过程条按段报告续写",
 		);
 		assert.ok(activities.some((a) => a.includes("封笔")), "过程条报告封笔");
@@ -655,6 +655,61 @@ test("引擎：受理门拒掉的段落不上屏——被拒草稿不流式、�
 	}
 });
 
+test("引擎：受理门按路标计费——同一路标内第二段免读，勾掉路标才重新计门（8/16）", async () => {
+	const { cwd, sm } = makeStage();
+	mkdirSync(join(cwd, "skills", "必读"), { recursive: true });
+	writeFileSync(
+		join(cwd, "skills", "必读", "SKILL.md"),
+		"---\nname: 必读\ndescription: 落笔前必读\neveryBeat: true\n每轮: true\n---\n\n落笔前读我。",
+	);
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses([
+			// 列两条路标，读完必读 skill，交第 1 段 → 受理
+			fauxAssistantMessage(
+				[
+					fauxToolCall("beat_plan", { steps: ["路标一", "路标二"] }),
+					fauxToolCall("skill_read", { name: "必读" }),
+					fauxToolCall("draft_append", { segment: "第一段，同路标内。" }),
+				],
+				{ stopReason: "toolUse" },
+			),
+			// 同一条路标内再交一段，**没有重读** → 也该受理（按段计费时这里会被打回）
+			fauxAssistantMessage([fauxToolCall("draft_append", { segment: "第二段，仍在同一路标，免读。" })], {
+				stopReason: "toolUse",
+			}),
+			// 勾掉路标一 → 门重新计；接着不读就交 → 应被打回
+			fauxAssistantMessage(
+				[
+					fauxToolCall("beat_step_done", { step: 1 }),
+					fauxToolCall("draft_append", { segment: "越过新路标却没读，应被打回。" }),
+				],
+				{ stopReason: "toolUse" },
+			),
+			// 补读后重交 → 受理
+			fauxAssistantMessage(
+				[fauxToolCall("skill_read", { name: "必读" }), fauxToolCall("draft_append", { segment: "补读后的一段。" })],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage([fauxToolCall("draft_seal", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage(""),
+			fauxScribeEmpty(),
+		]);
+		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"));
+		await engine.performTurn("我推门进屋。");
+
+		const { history } = rebuildHistory(sm.getBranch() as BranchEntryLike[]);
+		const finalText = history[history.length - 1].text;
+		assert.ok(finalText.includes("第一段，同路标内。"), "路标内首段受理");
+		assert.ok(finalText.includes("第二段，仍在同一路标，免读。"), "同一路标内第二段免读即受理——按路标计费的证据");
+		assert.ok(!finalText.includes("越过新路标却没读"), "勾掉路标后门重新计，未读即打回");
+		assert.ok(finalText.includes("补读后的一段。"), "补读后重交受理");
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("引擎循环：draft_append 后忘了封笔 → 催告一轮 → 仍不封则兜底封笔，日程照走（M-E/M-R1）", async () => {
 	const { cwd, sm } = makeStage();
 	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
@@ -676,7 +731,7 @@ test("引擎循环：draft_append 后忘了封笔 → 催告一轮 → 仍不封
 		await engine.performTurn("我抬头看她。");
 
 		const nudge = JSON.stringify(ctxs[0]?.messages ?? []);
-		assert.ok(nudge.includes("已续写 1 段未封笔。写完就 draft_seal，没写完接着写。"), "催封笔 = 契约文案（§2.4）");
+		assert.ok(nudge.includes("已续写 1 个路标未封笔。写完就 draft_seal，没写完接着写。"), "催封笔 = 契约文案（§2.4）");
 		const { history } = rebuildHistory(sm.getBranch() as BranchEntryLike[]);
 		assert.equal(history[history.length - 1].text, "她把伞收在门外，抖了抖雪。", "兜底封笔，正文照常落树");
 	} finally {
@@ -1043,7 +1098,7 @@ test("轮内自由（D10）：同一轮两个 draft_append 全部收下——停
 		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"), { onActivity: (d) => activities.push(d) });
 		await engine.performTurn("你先进去。");
 
-		assert.ok(activities.some((a) => a.includes("续写第 1 段")) && activities.some((a) => a.includes("续写第 2 段")), "两段都收");
+		assert.ok(activities.some((a) => a.includes("演完第 1 个路标")) && activities.some((a) => a.includes("演完第 2 个路标")), "两段都收");
 		const { history } = rebuildHistory(sm.getBranch() as BranchEntryLike[]);
 		const finalText = history[history.length - 1].text;
 		assert.ok(finalText.indexOf("她推门进院。") < finalText.indexOf("院里空无一人。"), "两段按序拼接落树");
@@ -1234,7 +1289,7 @@ test("判定送达不依赖工具轮（8/12 补洞）：勾不齐路标就停手
 		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"));
 		await engine.performTurn("你先进去。");
 
-		assert.ok(ctxs[3].includes("已续写 1 段未封笔"), "停手1：催封笔");
+		assert.ok(ctxs[3].includes("已续写 1 个路标未封笔"), "停手1：催封笔");
 		assert.ok(ctxs[4].includes("【判定】正文约"), "停手2：兜底封笔前补判定");
 		assert.ok(ctxs[4].includes("先 `ask` 再动笔"), "补的判定带 ask 裁决句");
 		assert.equal((ctxs[4].match(/【判定】/g) ?? []).length, 1, "判定只补一次，不成循环");

@@ -365,7 +365,7 @@ export function runWriteTool(
 		// 已经在续写中（appends>0）则不拦：那是分段写到一半改用全量重交。
 		if (!internal && ws.lookups > 0 && ws.appends === 0 && ws.draft === "") {
 			return {
-				text: `未收稿：本拍已查过 ${ws.lookups} 次世界（有戏的拍）。用 draft_append 一段一段演。`,
+				text: `未收稿：本拍已查过 ${ws.lookups} 次世界（有戏的拍）。用 draft_append 一个路标一个路标演。`,
 				activity: "一次交完被拦下（这拍有戏）",
 				ok: false,
 			};
@@ -394,7 +394,7 @@ export function runWriteTool(
 		// 回执只留事实（§2.4）：进度与判定由轮次注入承载
 		return {
 			text: `已续写（第 ${ws.appends} 段）。`,
-			activity: `续写第 ${ws.appends} 段`,
+			activity: `演完第 ${ws.appends} 个路标`,
 			ok: true,
 		};
 	}

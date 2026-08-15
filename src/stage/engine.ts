@@ -306,7 +306,7 @@ export function progressLine(
 	// 必定读取（每轮）skill：落笔前强制先读（受理门保证）——制造停顿=死磕燃料；标志在数据不在名字
 	const forced =
 		forcedSkills && forcedSkills.length > 0
-			? `每段落笔前先 \`skill_read\`${forcedSkills.map((n) => `「${n}」`).join("")}构思本段，再 \`draft_append\`。`
+			? `每个路标落笔前先 \`skill_read\`${forcedSkills.map((n) => `「${n}」`).join("")}构思本路标，再 \`draft_append\`。`
 			: "";
 	const packs = packNames && packNames.length > 0 ? `可读场面包：${packNames.join(" / ")}。` : "";
 	return `【进度】${parts.join("；")}。${forced}${packs}`;
@@ -1009,14 +1009,17 @@ export class StageEngine {
 		let last: AssistantMsgLike = o.first;
 		let text = "";
 		let nudged = false; // 空手逼稿只给一轮机会，防空转
-		let sealNudged = false; // 封笔催告（分段续写完但忘了 draft_seal），只给一轮
+		let sealNudged = false; // 封笔催告（逐路标续写完但忘了 draft_seal），只给一轮
 		let userStopped = false; // P7：用户在 ask 选择卡上点了停止——本拍收束
 		let lastConsumed = 0; // 本轮开始时 text 长度——判定「本轮新产出文本」用
 		// 五注入日程状态（D9：进度行替换语义；判定/记账/谢幕一次性）
 		let verdictInjected = false;
-		// 必定读取（每轮）受理门：每段落笔前必须先读完所有 forcedSkills（成功交段后每段重置）
-		const readThisSeg = new Set<string>(); // 本段已读的 forcedSkill 名
-		let forcedNudgedForSeg = false; // 本段已催过一次（防空转安全阀）
+		// 必定读取（每轮）受理门：每条路标落笔前必须先读完所有 forcedSkills
+		// （8/16：重置点从「交段」搬到「勾路标」，与送模文案同步改口径。停顿本身是设计
+		// ——工具调用是模型可靠执行的动作、思考指令不是——只是计价单位从段落改成路标：
+		// 一条路标内接着演的段落不再重复强制读。）
+		const readThisStep = new Set<string>(); // 本条路标已读的 forcedSkill 名
+		let forcedNudgedForStep = false; // 本条路标已催过一次（防空转安全阀）
 		const skillReadDone = new Set<string>(); // 重复读瘦身：本拍已读过全文的 skill 名
 		let ledgerInjected = false;
 		let ledgerDone = false;
@@ -1046,7 +1049,7 @@ export class StageEngine {
 					if (!o.ws.sealed && o.ws.appends > 0 && !sealNudged) {
 						// 催封笔（§2.4，只给一次）
 						sealNudged = true;
-						convo.push(inject(`已续写 ${o.ws.appends} 段未封笔。写完就 draft_seal，没写完接着写。`));
+						convo.push(inject(`已续写 ${o.ws.appends} 个路标未封笔。写完就 draft_seal，没写完接着写。`));
 					} else {
 						// 停手分支补判定（8/12）：模型勾完路标后直接停手（不调 seal、不调工具），
 						// 工具轮判定分支只跑在模型还在调工具时，停手分支原先整个没有判定逻辑——
@@ -1134,17 +1137,17 @@ export class StageEngine {
 					if (LEDGER_TOOLS.has(name)) ledgerCallThisRound = true;
 					if (name === "panel_write" || name === "panel_close") o.ws.panelWrites++;
 					// 必定读取（每轮）受理门（复现 8/11「强制调用」，泛化为认 `每轮` 标志不认名字）：
-					// 落笔前必须先 skill_read 完所有 forcedSkills——没读全就交段，本段首次不受理（回执指路）；
-					// 模型执意重交则放行（每段只拦一次，防空转，安全阀同封笔催告）。
+					// 一条路标落笔前必须先 skill_read 完所有 forcedSkills——没读全就交，本次首交不受理
+					// （回执指路）；模型执意重交则放行（每条路标只拦一次，防空转，安全阀同封笔催告）。
 					const skillReadName =
 						name === "skill_read" ? (call.arguments as { name?: string } | undefined)?.name : undefined;
-					if (skillReadName && o.forcedSkills.includes(skillReadName)) readThisSeg.add(skillReadName);
-					const unreadForced = o.forcedSkills.filter((n) => !readThisSeg.has(n));
-					if (name === "draft_append" && unreadForced.length > 0 && !forcedNudgedForSeg) {
-						forcedNudgedForSeg = true;
+					if (skillReadName && o.forcedSkills.includes(skillReadName)) readThisStep.add(skillReadName);
+					const unreadForced = o.forcedSkills.filter((n) => !readThisStep.has(n));
+					if (name === "draft_append" && unreadForced.length > 0 && !forcedNudgedForStep) {
+						forcedNudgedForStep = true;
 						r = {
-							text: `本段未受理：先 \`skill_read\`${unreadForced.map((n) => `「${n}」`).join("")}构思这一段，再重交。`,
-							activity: "交段暂缓——先读必定 skill",
+							text: `本次未受理：先 \`skill_read\`${unreadForced.map((n) => `「${n}」`).join("")}构思这个路标，再重交。`,
+							activity: "交稿暂缓——先读必定 skill",
 							ok: false,
 						};
 					} else if (skillReadName && skillReadDone.has(skillReadName)) {
@@ -1224,10 +1227,11 @@ export class StageEngine {
 						o.ws.mediaDeliveries = o.ws.mediaDeliveries ?? [];
 						o.ws.mediaDeliveries.push({ toolName: name, details: mediaDetails, text: r.text });
 					}
-					// 必定读取受理门：本段真交上了 → 清空已读、下一段重新计门
-					if (name === "draft_append" && r.ok !== false) {
-						readThisSeg.clear();
-						forcedNudgedForSeg = false;
+					// 必定读取受理门：本条路标勾掉了 → 清空已读、下一条路标重新计门
+					// （8/16：原先挂在 draft_append 上＝按段计费；改挂 beat_step_done＝按路标计费。）
+					if (name === "beat_step_done" && r.ok !== false) {
+						readThisStep.clear();
+						forcedNudgedForStep = false;
 					}
 					// 重复读瘦身：名单内 skill 首读成功后记名（未知名回落直写不记，避免把 miss 记成已读）
 					if (skillReadName && o.skillNames.includes(skillReadName) && r.ok !== false) {
