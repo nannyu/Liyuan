@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { expandSkinReplacement } from "../src/cardSkin.ts";
 import {
 	buildCardFrontSnapshot,
 	displayRules,
@@ -72,17 +73,44 @@ test("displayRules: 非法正则跳过不抛", () => {
 	}
 });
 
-test("displayRules: trimStrings 非空的规则整条跳过(v1 不支持,宁缺毋错)", () => {
-	const warnings: string[] = [];
-	const oldWarn = console.warn;
-	try {
-		console.warn = (...args) => warnings.push(args.join(" "));
-		const rules = displayRules([{ ...skinScript, trimStrings: ["x"] }]);
-		assert.equal(rules.length, 0);
-		assert.ok(warnings.some((w) => w.includes("trimStrings")));
-	} finally {
-		console.warn = oldWarn;
-	}
+test("displayRules: trimStrings 随规则带下去(不再整条丢),在替换时对捕获组生效", () => {
+	const rules = displayRules([{ ...skinScript, trimStrings: ["x", ""] }]);
+	assert.equal(rules.length, 1, "有 trimStrings 的规则必须收下——整条丢会让作者的渲染凭空消失");
+	assert.deepEqual(rules[0].trim, ["x"], "空串滤掉，其余原样带下去");
+	assert.equal(displayRules([{ ...skinScript, trimStrings: [] }])[0].trim, undefined, "空数组不带 trim 字段");
+});
+
+test("trimStrings 语义与 ST filterString 同义:只削代入的捕获组,不动模板字面", () => {
+	// ST engine.js:457 —— 对代入替换串的那段文本逐条 replaceAll 删除
+	assert.equal(expandSkinReplacement("[$1]", "整段", ["a删b删c"], ["删"]), "[abc]");
+	assert.equal(expandSkinReplacement("{{match}}", "前删后", [], ["删"]), "前后");
+	assert.equal(expandSkinReplacement("$&", "前删后", [], ["删"]), "前后");
+	// 模板里的字面文本不受影响——只有代入的部分被削
+	assert.equal(expandSkinReplacement("删[$1]删", "m", ["x"], ["删"]), "删[x]删");
+	// 无 trim 时行为与改动前逐字一致
+	assert.equal(expandSkinReplacement("[$1]", "m", ["a删b"]), "[a删b]");
+});
+
+test("buildCardFrontSnapshot: 预设自带 regex_scripts 一并收下,且排在卡规则之前", () => {
+	// 酒馆三源顺序 GLOBAL → PRESET → SCOPED(engine.js:108-133);梨园无 GLOBAL
+	const cardRaw = { data: { name: "卡", extensions: { regex_scripts: [{ ...skinScript, scriptName: "卡的" }] } } };
+	const presetRaw = { prompts: [], extensions: { regex_scripts: [{ ...skinScript, scriptName: "预设的" }] } };
+
+	const both = buildCardFrontSnapshot({ card: "c.png", userName: "u" }, cardRaw, "卡", presetRaw);
+	assert.deepEqual(
+		both.rules.map((r) => r.name),
+		["预设的", "卡的"],
+		"预设规则必须在前——后一条吃的是前一条的产物",
+	);
+
+	// 只有预设有正则:也算有皮肤(此前预设那份从未被读过,状态栏只能靠名字名单猜)
+	const presetOnly = buildCardFrontSnapshot({ card: "c.png", userName: "u" }, null, "", presetRaw);
+	assert.equal(presetOnly.hasSkin, true);
+	assert.deepEqual(presetOnly.rules.map((r) => r.name), ["预设的"]);
+
+	// 不传预设 = 改动前的行为,逐字不变
+	const cardOnly = buildCardFrontSnapshot({ card: "c.png", userName: "u" }, cardRaw, "卡");
+	assert.deepEqual(cardOnly.rules.map((r) => r.name), ["卡的"]);
 });
 
 test("skin 开关:默认开,cardSkinOff 关,setSkinEnabled 幂等往返", () => {

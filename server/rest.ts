@@ -362,6 +362,7 @@ export function loadConfig(cwd: string): RpConfig {
 /**
  * 一档皮肤快照(hello 与 GET /api/cardfront 唯一组装点)。
  * 读盘失败不抛:无皮肤即可,前端清空 cardSkin。
+ * 规则表 = 预设自带 regex_scripts + 卡自带 regex_scripts(顺序同酒馆 PRESET → SCOPED)。
  */
 export function loadCardFrontSnapshot(cwd: string): CardFrontSnapshot {
 	const config = loadConfig(cwd);
@@ -378,7 +379,14 @@ export function loadCardFrontSnapshot(cwd: string): CardFrontSnapshot {
 			/* ignore */
 		}
 	}
-	return buildCardFrontSnapshot(config, raw, charName);
+	// 预设原文里的 regex_scripts:坏预设不许拖垮皮肤,整段兜住
+	let presetRaw: Record<string, unknown> | null = null;
+	try {
+		presetRaw = loadEffectivePreset(cwd).doc?.raw ?? null;
+	} catch {
+		/* ignore */
+	}
+	return buildCardFrontSnapshot(config, raw, charName, presetRaw);
 }
 
 /** config PUT 白名单（card 不在内：换卡必须走 /api/card/switch 的完整流程） */
