@@ -537,7 +537,7 @@ export class StageEngine {
 		// 上下文 = f(分支)
 		const branch = sm.getBranch() as BranchEntryLike[];
 		const state = stateFromBranch(branch);
-		const { history, lastUserText, lastNarrativeText, summary } = rebuildHistory(branch);
+		const { history, lastUserText, lastNarrativeText, summary } = rebuildHistory(branch, materials.promptRules);
 		if (!history.some((m) => m.role === "user")) {
 			ev.onNotify?.("error", "没有可开演的用户输入。");
 			return { aborted: false, error: "no-user-input" };

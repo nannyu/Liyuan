@@ -6,6 +6,7 @@ import {
 	displayRules,
 	extractRegexScripts,
 	isSkinEnabled,
+	promptRules,
 	setSkinEnabled,
 } from "../src/cardfront.ts";
 
@@ -51,6 +52,22 @@ test("displayRules: 显示向保留,promptOnly/disabled/非AI输出排除", () =
 	assert.equal(rules[0].source, "<StatusBlock>");
 	assert.equal(rules[0].flags, "gs");
 	assert.ok(rules[0].replace.startsWith("<div"));
+});
+
+test("promptRules: 送模侧收 promptOnly 与破坏性，排除 markdownOnly/disabled/非AI输出", () => {
+	const pr = promptRules([
+		skinScript, // markdownOnly → 送模侧不收
+		promptOnlyScript, // promptOnly → 收
+		{ ...skinScript, scriptName: "破坏性", markdownOnly: false, promptOnly: false, findRegex: "<w2g>([\\s\\S]*?)<\\/w2g>" }, // 两个only都没勾 → 收
+		{ ...skinScript, scriptName: "已停用", disabled: true },
+		{ ...skinScript, scriptName: "只管用户输入", placement: [1] },
+	]);
+	assert.deepEqual(
+		pr.map((r) => r.name),
+		["删除描写分析", "破坏性"],
+		"markdownOnly/disabled/非AI输出排除，promptOnly 与破坏性收",
+	);
+	assert.equal(pr[0].replace, "", "替换串原样带下去");
 });
 
 test("displayRules: 裸模式串(无 /…/ 包裹)按字面正则源处理", () => {

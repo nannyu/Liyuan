@@ -11,7 +11,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
-import { loadCardFile, applyMacros } from "../card.ts";
+import { loadCardFile, applyMacros, readCardRawJson } from "../card.ts";
+import { promptRules, extractRegexScripts, type DisplayRule } from "../cardfront.ts";
 import {
 	applyDisabledLore,
 	constantEntries,
@@ -73,6 +74,8 @@ export interface StageMaterials {
 	macroWarnings: string[];
 	/** M-C2：被判死的外部插件协议条目（世界书通道 H 类退场，进装配报告） */
 	protocolDrops: ProtocolDrop[];
+	/** 送模侧作者正则（promptOnly/破坏性，预设+卡）——rebuildHistory 应用，剥「作者不想让模型看」的块 */
+	promptRules: DisplayRule[];
 }
 
 const resolvePath = (cwd: string, p: string): string => (isAbsolute(p) ? p : join(cwd, p));
@@ -154,6 +157,14 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 
 	const cardAbs = resolvePath(cwd, config.card);
 	const card = loadCardFile(cardAbs);
+	// 卡原文（含 extensions.regex_scripts）：显示/送模两侧与 cardfront 快照同源
+	const cardRegexScripts = (() => {
+		try {
+			return extractRegexScripts(readCardRawJson(cardAbs).raw);
+		} catch {
+			return [];
+		}
+	})();
 
 	// 世界书：已挂载独立书（0..N）+ 补充设定集 overlay；卡内 character_book 不自动进上下文
 	const fileGroups: LorebookEntry[][] = [];
@@ -253,6 +264,8 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		presetActive,
 		macroWarnings: [...unsupported],
 		protocolDrops,
+		// 送模侧作者正则：预设 + 卡（与 cardfront 显示侧同源；promptOnly/破坏性规则）
+		promptRules: promptRules([...(presetDoc?.raw?.extensions?.regex_scripts ?? []), ...cardRegexScripts]),
 	};
 }
 

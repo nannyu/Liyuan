@@ -12,10 +12,12 @@
  */
 
 import { applyMacros } from "../card.ts";
+import { applyCardSkin } from "../cardSkin.ts";
 import { applyDraftOps, type DraftMsgLike } from "../draft.ts";
 import { cleanAssistantText } from "../postprocess.ts";
 import { formatState, defaultState } from "../state.ts";
 import { isBackstageText } from "../stance.ts";
+import type { DisplayRule } from "../cardfront.ts";
 import type { CharacterCard, LorebookEntry, MacroContext, RpConfig, WorldState } from "../types.ts";
 
 // ---------------- 分支 → 历史 ----------------
@@ -122,9 +124,13 @@ export function activeSummary(branch: BranchEntryLike[]): { summary: string; cut
  * 工具调用/思考块/账本快照等过程条目一律不进历史（R3：装配时就不存在）。
  * 相邻同角色文本合并（API 安全）。
  *
+ * promptRules：作者正则里 promptOnly / 破坏性那批（对齐酒馆送模侧，engine.js:352）。
+ * 挂在**策略引擎之前**跑——cleanAssistantText 的 unwrap 会先拆掉 <w2g> 等标签，
+ * 正则必须先于它应用（与显示层「禁止 unwrap 先于作者正则」同一条纪律）。
+ *
  * M4：有 rp-summary 时，被覆盖的早期条目整段不进历史，改由 summary 字段回读为【前情提要】。
  */
-export function rebuildHistory(branch: BranchEntryLike[]): RebuiltHistory {
+export function rebuildHistory(branch: BranchEntryLike[], promptRules: DisplayRule[] = []): RebuiltHistory {
 	const active = activeSummary(branch);
 	const live = active ? branch.slice(active.cut) : branch;
 
@@ -158,6 +164,10 @@ export function rebuildHistory(branch: BranchEntryLike[]): RebuiltHistory {
 	for (const m of patched) {
 		const role = (m as { _role?: "user" | "assistant" })._role ?? (m.role === "user" ? "user" : "assistant");
 		let text = textOf(m.content);
+		// 送模侧作者正则（promptOnly/破坏性）剥「作者不想让模型看」的块——必须在策略引擎
+		// **之前**跑：cleanAssistantText 的 unwrap 会先拆掉 <w2g> 等标签，晚了正则打空
+		// （与显示层「禁止 unwrap 先于作者正则」同一条纪律）。
+		if (promptRules.length > 0) text = applyCardSkin(text, promptRules, { charName: "", userName: "" });
 		if (role === "assistant") text = cleanAssistantText(text);
 		text = text.trim();
 		if (!text) continue;

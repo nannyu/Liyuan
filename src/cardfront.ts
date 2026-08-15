@@ -90,7 +90,7 @@ export function displayRules(scripts: unknown[]): DisplayRule[] {
 		if (r.disabled === true) continue;
 		const placement = Array.isArray(r.placement) ? r.placement : [];
 		if (!placement.includes(2)) continue; // 2 = AI 输出
-		if (r.promptOnly === true && r.markdownOnly !== true) continue; // 纯送模侧,梨园尚无该通道
+		if (r.promptOnly === true && r.markdownOnly !== true) continue; // 纯送模侧,见 promptRules
 		if (typeof r.substituteRegex === "number" && r.substituteRegex !== 0) {
 			console.warn(`[cardfront] 规则「${String(r.scriptName ?? "?")}」用了 substituteRegex,v1 不支持,跳过`);
 			continue;
@@ -104,6 +104,54 @@ export function displayRules(scripts: unknown[]): DisplayRule[] {
 		const parsed = parseFindRegex(find);
 		if (!parsed) {
 			console.warn(`[cardfront] 规则「${String(r.scriptName ?? "?")}」正则无法解析,跳过`);
+			continue;
+		}
+		const trim = Array.isArray(r.trimStrings) ? r.trimStrings.filter((t): t is string => typeof t === "string" && t !== "") : [];
+		out.push({
+			name: typeof r.scriptName === "string" ? r.scriptName : "",
+			source: parsed.source,
+			flags: parsed.flags,
+			replace: typeof r.replaceString === "string" ? r.replaceString : "",
+			...(trim.length > 0 ? { trim } : {}),
+		});
+	}
+	return out;
+}
+
+/**
+ * 送模侧规则（对齐酒馆 promptOnly 语义，engine.js:352）：
+ * - `promptOnly`（含纯 promptOnly）＝只改发送给模型的内容，不改聊天记录——剥 VariableCheck/w2g 等
+ * - 两个 only 都没勾（破坏性）＝酒馆在 cleanUpMessage 落盘时改原文，梨园没有「原文」概念，
+ *   统一归到送模侧：它们改的也是「别让模型看到」的内容
+ * - `markdownOnly`（纯显示）排除——那是 displayRules 的活
+ * 翻译器与显示层同一套（applyCardSkin：$1/{{match}}/trim 展开），只是规则集不同、挂在历史路径。
+ */
+export function promptRules(scripts: unknown[]): DisplayRule[] {
+	const out: DisplayRule[] = [];
+	for (const s of scripts) {
+		if (!s || typeof s !== "object") continue;
+		const r = s as Record<string, unknown>;
+		if (r.disabled === true) continue;
+		const placement = Array.isArray(r.placement) ? r.placement : [];
+		if (!placement.includes(2)) continue; // 2 = AI 输出
+		const mdOnly = r.markdownOnly === true;
+		const prOnly = r.promptOnly === true;
+		if (mdOnly && !prOnly) continue; // 纯显示，送模侧不管
+		if (!mdOnly && !prOnly) {
+			// 两个 only 都没勾＝破坏性：酒馆落盘时改原文；梨园无原文概念，归送模侧
+		}
+		if (typeof r.substituteRegex === "number" && r.substituteRegex !== 0) {
+			console.warn(`[cardfront] 规则「${String(r.scriptName ?? "?")}」用了 substituteRegex,送模侧 v1 不支持,跳过`);
+			continue;
+		}
+		if (r.minDepth != null || r.maxDepth != null) {
+			console.warn(`[cardfront] 规则「${String(r.scriptName ?? "?")}」的深度限定被忽略（送模侧）`);
+		}
+		const find = typeof r.findRegex === "string" ? r.findRegex : "";
+		if (!find.trim()) continue;
+		const parsed = parseFindRegex(find);
+		if (!parsed) {
+			console.warn(`[cardfront] 规则「${String(r.scriptName ?? "?")}」正则无法解析,跳过（送模侧）`);
 			continue;
 		}
 		const trim = Array.isArray(r.trimStrings) ? r.trimStrings.filter((t): t is string => typeof t === "string" && t !== "") : [];

@@ -14,6 +14,7 @@ import {
 	codexNamesFromBranch,
 	type BranchEntryLike,
 } from "../src/stage/assemble.ts";
+import type { DisplayRule } from "../src/cardfront.ts";
 import { extractDraftRules } from "../src/draft.ts";
 import { assemblePresetAfter, constantLoreOf, loadStageMaterials } from "../src/stage/materials.ts";
 import { defaultState } from "../src/state.ts";
@@ -64,6 +65,38 @@ test("rebuildHistory：开场白→assistant、补丁套用、过程条目蒸发
 	assert.ok(!history[2].text.includes("内心盘算"), "thinking 不进历史");
 	assert.equal(lastUserText, "说明来意。");
 	assert.ok(lastNarrativeText.includes("夜霜"), "语言检测源=最后台上叙事（含补丁）");
+});
+
+test("rebuildHistory：送模侧作者正则（promptOnly/破坏性）剥「作者不想让模型看」的块", () => {
+	const branch: BranchEntryLike[] = [
+		userE("你先进去。"),
+		{
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "text", text: "正文一句。\n\n<w2g>选项：1 走 2 停</w2g>\n\n<SexualScene>内容</SexualScene>" },
+				],
+			},
+		},
+	];
+	const promptRulesFixture: DisplayRule[] = [
+		// TG-ai看不见 同款：剥 VariableCheck/SexualScene/Disclaimer/w2g
+		{
+			name: "TG-ai看不见",
+			source: "<(VariableCheck|SexualScene|Disclaimer|w2g)>([\\s\\S]*?)<\\/\\1>|<!--([\\s\\S]*?)-->",
+			flags: "g",
+			replace: "",
+		},
+	];
+	const { history } = rebuildHistory(branch, promptRulesFixture);
+	const sent = history[history.length - 1].text;
+	assert.ok(sent.includes("正文一句"), "正文保留");
+	assert.ok(!sent.includes("w2g"), "作者 promptOnly 规则剥掉不想让模型看的块");
+	assert.ok(!sent.includes("SexualScene"), "同上");
+	// 对照组：不传规则 → 块原样进历史（unwrapped 内容仍在）
+	const { history: ctrl } = rebuildHistory(branch);
+	assert.ok(ctrl[ctrl.length - 1].text.includes("SexualScene") || ctrl[ctrl.length - 1].text.includes("内容"), "无规则时不剥");
 });
 
 test("rebuildHistory：幕后轮的回复不作语言检测源；rp-import 记为 user 侧", () => {
