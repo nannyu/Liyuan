@@ -269,6 +269,17 @@ export function buildStageSystemPrompt({
 	const sections: string[] = [];
 	const declared = declaredMarkers ?? new Set<string>();
 
+	// 0) 梨园架构段：讲清脚下的机器怎么转（轮次、思考/扮演/写作三活动的位置、注入帧），供预设自行适配。
+	//    只写架构，不写角色（碰破限）、不教写作（那是预设的教导权）、不举写作细节（工具描述里已有）。
+	//    先于预设装配段：模型最先读到梨园怎么运转，再读预设教它演什么。
+	sections.push(
+		`# 梨园运行架构
+每拍按轮次推进，思考、扮演、写作在轮次中分开进行。
+- 首轮只规划：读题、探索、请用户定夺、列路标。路标是这一步的剧情走向，只到这一步为止。
+- 扮演轮逐段推进：思考本段剧情 → 构思怎么落笔 → 产出正文段落 → 推进路标。
+- 每轮出现的【进度】【判定】【记账】是当前状态，以它为准。`,
+	);
+
 	// 1) 预设装配段：原文原序，零 harness 引导语。卡/世界书/人设已在预设作者指定的槽位里。
 	if (presetBefore && presetBefore.length > 0) sections.push(presetBefore.join("\n\n"));
 

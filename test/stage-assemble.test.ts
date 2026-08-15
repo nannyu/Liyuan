@@ -197,19 +197,24 @@ test("system prompt：消息流约定补齐名录/面板/索引语义（每拍�
 	assert.ok(p.includes("`memory_search`") && p.includes("`lorebook_search`"), "检索通道指引在语义表（一次说清）");
 });
 
-test("system prompt：预设装配段排最前、原文原序，harness 骨架殿后（PLAN-PRESET-PIPELINES §四之四）", () => {
+test("system prompt：梨园架构段最前，预设装配段随后、原文原序，harness 骨架殿后", () => {
 	const withPreset = buildStageSystemPrompt({
 		card,
 		config,
 		constantLore: [],
 		presetBefore: ["破限框架原文。", "文风块：要生动。", "不替用户做重大决定。"],
 	});
-	assert.ok(withPreset.startsWith("破限框架原文。"), "预设装配段是 system 主体，排最前");
-	assert.ok(!withPreset.includes("# 预设指令（用户自备，按原序）"), "梨园不再给预设加标题（铁律一）");
+	assert.ok(withPreset.startsWith("# 梨园运行架构"), "架构段最前：模型先读梨园怎么运转，再读预设");
 	const at = (t: string) => withPreset.indexOf(t);
+	assert.ok(at("# 梨园运行架构") < at("破限框架原文。"), "架构段先于预设装配段");
+	assert.ok(!withPreset.includes("# 预设指令（用户自备，按原序）"), "梨园不再给预设加标题（铁律一）");
 	assert.ok(at("破限框架原文。") < at("文风块：要生动。") && at("文风块：要生动。") < at("不替用户做重大决定。"), "原序保持");
 	assert.ok(at("不替用户做重大决定。") < at("# 舞台"), "harness 骨架殿后");
 	assert.ok(!withPreset.includes("# 文风与写法") && !withPreset.includes("# 行为边界"), "B/C 归拢节已拆（零归拢）");
+	// 架构段只讲系统怎么运转：不定义角色、不教写作、不举写作细节（那些归预设/工具描述）
+	const arch = withPreset.slice(0, withPreset.indexOf("破限框架原文。"));
+	assert.ok(!arch.includes("你是") && !arch.includes("你的名字"), "架构段不定义角色身份（碰破限）");
+	assert.ok(!arch.includes("神态") && !arch.includes("对白") && !arch.includes("环境"), "架构段不举写作细节");
 });
 
 test("system prompt：marker 归位——预设声明过的槽位，梨园不再按自己版式重出一遍", () => {
