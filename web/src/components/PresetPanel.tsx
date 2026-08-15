@@ -194,11 +194,6 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	draftRef.current = draft;
 	const activeFile = files.data?.active ?? null;
 
-	const contract = usePanelData(
-		() => apiGet<{ modules: Array<{ tag: string; source: string; form: string; hint?: string }>; declared: boolean; file: string }>("/api/output-contract"),
-		{ watchAgent: true, cacheKey: "/api/output-contract" },
-	);
-
 	const loadFromDisk = useCallback(async () => {
 		setLoadingDetail(true);
 		setLoadError(null);
@@ -319,8 +314,8 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		return { known, unknown };
 	}, [draft]);
 
-	/** 页签：参数 | 提示词（装配进提示词的全部块） | 状态栏（输出合约） */
-	const [tab, setTab] = useState<"samplers" | "prompt" | "contract">("samplers");
+	/** 页签：参数 | 提示词（装配进提示词的全部块） */
+	const [tab, setTab] = useState<"samplers" | "prompt">("samplers");
 
 	/** 酒馆内置槽位（Chat History / Char Description…）单列——它们没有正文，只声明位置 */
 	const blocksByKind = useMemo(() => {
@@ -505,16 +500,6 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 										</button>
 									);
 								})()}
-								<button
-									type="button"
-									role="tab"
-									aria-selected={tab === "contract"}
-									className={`preset-tab ${tab === "contract" ? "active" : ""}`}
-									onClick={() => setTab("contract")}
-								>
-									状态栏
-									<span className="preset-tab-count">{(contract.data?.modules ?? []).length}</span>
-								</button>
 							</div>
 
 							{tab === "samplers" && (
@@ -606,25 +591,6 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 										</section>
 									);
 								})()}
-
-							{tab === "contract" && (
-								<section className="sp-section">
-									{(contract.data?.modules ?? []).length === 0 && (
-										<div className="sp-empty">本套卡+预设无格式块要求（谢幕不注入，拍自然收束）。</div>
-									)}
-									{(contract.data?.modules ?? []).map((m) => (
-										<div key={m.tag} className="kv">
-											<span className="kv-k">
-												{m.form === "fence" ? `「${m.tag}」（\`\`\` 围栏块）` : `<${m.tag}${m.form === "placeholder" ? "/" : ""}>`}
-											</span>
-											<span className="kv-v">
-												{m.hint ? `${m.hint} · ` : ""}
-												{m.source}
-											</span>
-										</div>
-									))}
-								</section>
-							)}
 						</>
 					)}
 					{!draft && !missing && !loadingDetail && (

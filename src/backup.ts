@@ -78,10 +78,6 @@ const PROJECT_FILE_SCOPES = [
 /** .liyuan/ 下随用户走的数据文件（白名单；extensions 是源码，永不进备份） */
 const DOT_LIYUAN_DATA_FILES = [
 	"access.json",
-	"output-contract.json",
-	"output-contract.gen.json",
-	"output-contract.declared.json",
-	"output-contract.declared.raw.txt",
 	"preset-override.json",
 	"settings.json",
 ];

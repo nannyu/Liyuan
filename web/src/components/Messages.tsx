@@ -11,15 +11,7 @@ import { attachmentUrl, splitAttachments } from "../attachments.ts";
 import { applyCardSkin } from "../cardSkin.ts";
 import { isFullInterface } from "../htmlEmbed.ts";
 import { splitRichContentParts, type SkinMacros } from "../richContentParts.ts";
-import { displayAssistantText } from "../../../src/postprocess.ts";
 import { splitMarkdownParts, splitRpInline } from "../markdown.ts";
-import {
-	looksLikeYamlBlock,
-	statusClassSuffix,
-	statusLabel,
-	stripOrphanStatusTags,
-	stripYamlFence,
-} from "../statusBlocks.ts";
 import type { WireActivity, WireChoice, WireMsg } from "../wire.ts";
 import { estimateTokens, formatTokenCount, type TurnSegment } from "../timeline.ts";
 import { HtmlFrame } from "./HtmlFrame.tsx";
@@ -210,33 +202,9 @@ export function Paragraphs({ text }: { text: string }) {
 }
 
 /**
- * 角色卡状态栏面板：标题中文，不露外层 StatusBlock 字样。
- * body 内仍可能有 <summary> 与 ``` 分节——先走与正文相同的 display 策略 + markdown，
- * 禁止整段当 yaml pre 原样倾倒（会漏标签/围栏）。
- */
-function StatusPanel({ tag, body }: { tag: string; body: string }) {
-	// 剥残留状态标签字样 → 策略引擎 unwrap 内层 summary 等 → markdown 代码块
-	const cleaned = displayAssistantText(stripOrphanStatusTags(body));
-	const yaml = looksLikeYamlBlock(cleaned);
-	const content = yaml ? stripYamlFence(cleaned) : cleaned;
-	const cls = statusClassSuffix(tag);
-	return (
-		<aside className={`st-block st-block-${cls}`} data-kind={cls}>
-			<header className="st-block-head">{statusLabel(tag)}</header>
-			{yaml ? (
-				<pre className="st-block-yaml">{content}</pre>
-			) : (
-				<div className="st-block-body">
-					<Paragraphs text={content} />
-				</div>
-			)}
-		</aside>
-	);
-}
-
-/**
  * 正文渲染（真路径 = splitRichContentParts）：
- * skin → HTML 块（保护皮肤内 <status>）→ 剩余文本上的状态面板 → RP 排版
+ * 作者正则皮肤 → HTML 块（seamless 帧）→ 其余 RP 排版。
+ * 状态栏是作者正则产出的 HTML，走 html 分支；梨园不再按标签名抠「统一状态卡」。
  */
 export function RichContent({ text, skin }: { text: string; skin?: SkinProp | null }) {
 	const parts = splitRichContentParts(text, skin);
@@ -247,7 +215,6 @@ export function RichContent({ text, skin }: { text: string; skin?: SkinProp | nu
 	return (
 		<>
 			{parts.map((p, i) => {
-				if (p.kind === "status") return <StatusPanel key={i} tag={p.tag} body={p.body} />;
 				// 皮肤/正文内嵌 HTML：无痕 seamless；agent show_html 通道不经此路径
 				if (p.kind === "html") return <HtmlFrame key={i} html={p.html} scripts={p.scripts} seamless />;
 				if (p.kind === "text" && p.text.trim()) return <Paragraphs key={i} text={p.text} />;

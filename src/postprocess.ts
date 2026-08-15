@@ -1,30 +1,37 @@
 /**
  * 输出后处理——**策略引擎**，不靠无穷标签白名单。
  *
- * 对照酒馆源码(SillyTavern public/script.js + chats.js)：
- * - 酒馆**没有**社区卡标签清单。默认 `encode_tags: false` 时，消息走 markdown→HTML→DOMPurify；
- *   未知标签变成 `HTMLUnknownElement`（尖括号不显示成字，内容仍可见），不是逐标签登记。
- * - 梨园不渲染任意 HTML 标签树，用策略代替：未知标签 **unwrap**（剥壳留内容），效果对齐
- *   「标签不刺眼、内容还在」；状态类 **panel** 保留给前端画状态栏；思考类 **fold**。
+ * 对照酒馆源码(SillyTavern public/script.js:1753 messageFormatting + chats.js)：
+ * - 酒馆**没有**任何标签名单。sanitize config 全文只有 `MESSAGE_SANITIZE` 与
+ *   `ADD_TAGS:['custom-style']`（它给自己搬 CSS 的内部管道），无 ALLOWED_TAGS。
+ * - 自定义标签（`<state1>` `<catsay>` `<状态面板>`）经 DOMPurify 默认白名单**必被剥、
+ *   内容保留**——custom-element 逃生门要求标签名含短横线且配 tagNameCheck，两条都不满足。
+ *   `chats.js:1943` 那个 `HTMLUnknownElement → <br>` hook 正是「标签马上要被剥、先救换行」的证据。
+ * - 状态栏之所以是界面，全靠**作者写的 markdownOnly 正则**把自定义标签换成标准 HTML
+ *   （`script.js:1809`）。作者不写正则，`<state1>` 在酒馆里永远是裸文字。
  *
- * 预设会发明任意标签（thinking / 正文 / scene / Options / 自定义中文…）。枚举不过来，因此：
+ * 所以梨园对齐酒馆的做法是：**未知标签一律 unwrap**（剥壳留内容），渲染交给作者的正则
+ * （src/cardfront.ts 读卡与预设的 regex_scripts → src/cardSkin.ts 执行）。
  *
  * | 策略 | 显示 | 送模历史 | 判定 |
  * |------|------|----------|------|
  * | **fold** | 进思维链折叠，正文去掉 | 整块删除 | 名称像思考/草稿/分析，或预设自动发现 |
- * | **panel** | 保留标签给前端画状态卡 | 整块删除 | 名称像状态栏 |
  * | **strip** | 标签+内容都隐去 | 整块删除 | 名称像 jailbreak/仪式回显 |
- * | **unwrap** | 去掉标签、**内容当正文渲染** | 去掉标签留内容 | **默认**——所有未识别标签（含 Options 等） |
+ * | **unwrap** | 去掉标签、**内容当正文渲染** | 去掉标签留内容 | **默认**——所有未识别标签 |
  *
- * 新标签默认 unwrap：正文不丢、标签不刺眼；真要折叠的靠名称模式或从预设发现。
+ * 8/15：**panel 策略整体退场**。它原本把「名字像状态栏」的标签留给前端画梨园自制灰框——
+ * 那是酒馆从来不做的事，而它存在的唯一原因是梨园没读预设自带的 regex_scripts（导入期
+ * 连 extensions 一起丢了），只好拿名单猜自己扔掉的数据。实测：双人成行+TGbreak 共 53 条
+ * 作者正则里，提到 status/state1/catsay/options 的有 **0 条**——名单猜的名字作者没写过。
+ *
  * **所有上屏通道**必须走 prepareDisplayText（先皮肤正则，再策略）：
- * 禁止 unwrap 先于卡正则，否则 <stateN> 等标记被拆掉，HTML 界面规则永远打空。
+ * 禁止 unwrap 先于作者正则，否则 <stateN> 等标记被拆掉，正则永远打空。
  */
 
 import type { DisplayRule } from "./cardfront.ts";
 import { applyCardSkin } from "./cardSkin.ts";
 
-export type TagPolicy = "fold" | "panel" | "strip" | "unwrap";
+export type TagPolicy = "fold" | "strip" | "unwrap";
 
 /** 标签名：字母/中文起头，允许数字 _ - . 与中文（兼容 <haurki准则> <draft_notes>） */
 const TAG_NAME = String.raw`[A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff.\-]*`;
@@ -36,9 +43,6 @@ const OPEN_TAG_RE = new RegExp(`<(${TAG_NAME})(\\s[^>]*)?>`, "g");
 /** 思考 / 草稿 / 分析 → 折叠 */
 const FOLD_NAME_RE =
 	/^(?:thinking|think|thoughts?|draft(?:_?notes)?|reasoning|reason(?:ing)?|analysis|analy[sz]e|descriptive_?analysis|cot|chain_?of_?thought|scaffold|memo|notes?|推演|思考|思维|草稿|分析|笔记|备忘|内心推演)$/i;
-/** 状态栏 → 面板（stateN：多状态栏卡的序号形——8/10 实弹：漏认导致 unwrap 剥壳吐源码） */
-const PANEL_NAME_RE =
-	/^(?:status(?:_?block|bar)?|normal_?status|special_?status|char(?:acter)?_?status|state_?\d+|状态|状态栏|人物状态|场景状态)$/i;
 /** 仪式/越狱回显 → 整块扔掉 */
 const STRIP_NAME_RE = /^(?:haurki|haurki准则|jailbreak|system_?prompt|oai_?system|anti_?reject)$/i;
 
@@ -46,8 +50,6 @@ const STRIP_NAME_RE = /^(?:haurki|haurki准则|jailbreak|system_?prompt|oai_?sys
  * 运行时额外 fold 标签（小写）。由预设扫描写入——预设写了「必须先输出 <foo>」就把 foo 当思维链。
  */
 const extraFold = new Set<string>();
-/** 运行时额外 panel（小写） */
-const extraPanel = new Set<string>();
 /**
  * 「只在送模历史整块剥、显示层照常」的标签（小写）。
  *
@@ -64,7 +66,6 @@ const historyOnlyStrip = new Set<string>(HISTORY_STRIP_BUILTIN);
 
 export function resetDisplayTagExtras(): void {
 	extraFold.clear();
-	extraPanel.clear();
 	// 内置格式栈保底，只清运行时追加项
 	historyOnlyStrip.clear();
 	for (const t of HISTORY_STRIP_BUILTIN) historyOnlyStrip.add(t);
@@ -92,13 +93,6 @@ export function isHistoryStripTag(tag: string): boolean {
 	return historyOnlyStrip.has(norm) || historyOnlyStrip.has(raw.toLowerCase());
 }
 
-export function addPanelTags(tags: Iterable<string>): void {
-	for (const t of tags) {
-		const n = normalizeTagName(t);
-		if (n) extraPanel.add(n);
-	}
-}
-
 export function normalizeTagName(tag: string): string {
 	return tag.trim().toLowerCase().replace(/_/g, "");
 }
@@ -109,10 +103,8 @@ export function classifyTag(tag: string): TagPolicy {
 	const norm = normalizeTagName(raw);
 	if (!norm) return "unwrap";
 	if (extraFold.has(norm) || extraFold.has(raw.toLowerCase())) return "fold";
-	if (extraPanel.has(norm) || extraPanel.has(raw.toLowerCase())) return "panel";
 	// 模式匹配用「去下划线」与原文各试一次
 	if (FOLD_NAME_RE.test(raw) || FOLD_NAME_RE.test(norm)) return "fold";
-	if (PANEL_NAME_RE.test(raw) || PANEL_NAME_RE.test(norm)) return "panel";
 	if (STRIP_NAME_RE.test(raw) || STRIP_NAME_RE.test(norm)) return "strip";
 	return "unwrap";
 }
@@ -230,21 +222,17 @@ function tidyWhitespace(text: string): string {
 /**
  * 按策略改写全文（多轮至稳定，处理「外壳 unwrap 后内层 thinking 才暴露」）。
  * - fold/strip：删除整块（fold 的 body 另收集）
- * - panel：原样保留（display）或删除（history）
  * - unwrap：只留 body
  */
 function applyPolicies(
 	text: string,
-	opts: { keepPanel: boolean; collectFold: boolean; stripHistoryOnly?: boolean },
+	opts: { collectFold: boolean; stripHistoryOnly?: boolean },
 ): { text: string; foldParts: string[] } {
 	const foldParts: string[] = [];
 	let t = text;
 	for (let pass = 0; pass < 8; pass++) {
 		const blocks = scanTaggedBlocks(t);
 		if (blocks.length === 0) break;
-		// 本轮若只剩 panel 且 keepPanel，停止（避免死循环）
-		if (opts.keepPanel && blocks.every((b) => b.policy === "panel")) break;
-
 		let out = "";
 		let cursor = 0;
 		let changed = false;
@@ -258,9 +246,6 @@ function applyPolicies(
 				changed = true;
 			} else if (policy === "strip") {
 				changed = true;
-			} else if (policy === "panel") {
-				if (opts.keepPanel) out += b.raw;
-				else changed = true;
 			} else {
 				// unwrap：内容进正文（内层标签下轮再处理）
 				out += b.body;
@@ -275,16 +260,16 @@ function applyPolicies(
 	return { text: t, foldParts };
 }
 
-/** 历史送模：fold/panel/strip 整块扔；unwrap 拆包留内容；格式栈标签（catsay 等）另行整块剥 */
+/** 历史送模：fold/strip 整块扔；unwrap 拆包留内容；格式栈标签（catsay 等）另行整块剥 */
 export function cleanAssistantText(text: string): string {
-	let t = applyPolicies(text, { keepPanel: false, collectFold: false, stripHistoryOnly: true }).text;
+	let t = applyPolicies(text, { collectFold: false, stripHistoryOnly: true }).text;
 	// HTML 注释（导演旁注）
 	t = t.replace(/<!--[\s\S]*?-->/g, "");
 	return tidyWhitespace(t);
 }
 
 /**
- * 显示层：fold→思维链另抽；strip 扔；panel 保留；其余 unwrap。
+ * 显示层：fold→思维链另抽；strip 扔；其余 unwrap。
  * 另：HTML 注释、单独成行的「### 正文」类分隔。
  *
  * 标签 unwrap 后留下的 ```…``` 围栏**故意保留**：前端 markdown 渲染成代码块，
@@ -294,14 +279,12 @@ export function cleanAssistantText(text: string): string {
  * （见 prepareDisplayText），否则 unwrap 会先拆掉正则要匹配的标记。
  */
 export function displayAssistantText(text: string): string {
-	let t = applyPolicies(text, { keepPanel: true, collectFold: false }).text;
+	let t = applyPolicies(text, { collectFold: false }).text;
 	t = t.replace(/<!--[\s\S]*?-->/g, "");
 	t = t.replace(/^\s*#{1,6}\s*正文\s*$/gim, "");
 	t = t.replace(/^\s*#{1,6}\s*(thinking|draft|notes?|思维|草稿)\s*$/gim, "");
-	// 残留空标签行（非 panel——panel 需留给前端）
-	t = t.replace(new RegExp(`^\\s*</?(${TAG_NAME})(\\s[^>]*)?>\\s*$`, "gim"), (line, tag: string) => {
-		return classifyTag(tag) === "panel" ? line : "";
-	});
+	// 残留空标签行（作者正则更早一步已跑过；到这里还剩的就是没人认领的裸标签，剥掉）
+	t = t.replace(new RegExp(`^\\s*</?(${TAG_NAME})(\\s[^>]*)?>\\s*$`, "gim"), "");
 	return tidyWhitespace(t);
 }
 
@@ -390,7 +373,7 @@ function protectSkinDivs(text: string): { text: string; stash: string[] } {
  * 2) **纯**整页 HTML 载荷（前后无叙事）→ 原样交出（前端 HtmlFrame）
  * 3) 整页 HTML 与叙事混排 → HTML 段占位保护后照常过滤，再还原
  * 4) 皮肤 div 与叙事混排 → div 占位保护后照常过滤（thinking/注释不得因皮肤漏网），再还原
- * 5) 其余 displayAssistantText（fold/panel/unwrap）
+ * 5) 其余 displayAssistantText（fold/strip/unwrap）
  */
 export function prepareDisplayText(text: string, skin?: DisplaySkin | null): string {
 	if (!text) return "";
@@ -465,7 +448,7 @@ function protectFullPageBlocks(text: string): { text: string; stash: string[] } 
  * 抽出应进 UI「思维链」折叠的内容（fold 策略块）。
  */
 export function extractScaffoldThinking(text: string): string {
-	const { foldParts } = applyPolicies(text, { keepPanel: true, collectFold: true });
+	const { foldParts } = applyPolicies(text, { collectFold: true });
 	return foldParts
 		.join("\n\n---\n\n")
 		.replace(new RegExp(`^\\s*</?(${TAG_NAME})(\\s[^>]*)?>\\s*$`, "gim"), "")

@@ -15,8 +15,7 @@ import type { ExtensionAPI } from "@liyuan/agent-runtime";
 import { completeSimple } from "@liyuan/ai/compat";
 import { Type } from "typebox";
 
-import { loadCardFile, readCardRawJson } from "../../src/card.ts";
-import { cardStatusBarFormats } from "../../src/cardfront.ts";
+import { loadCardFile } from "../../src/card.ts";
 import { buildImportBlock, cleanChat, DEFAULT_STRIP_TAGS, parseStChat, serializeForImportSummary } from "../../src/chatlog.ts";
 import { findCommand } from "../../src/commands.ts";
 import {
@@ -152,8 +151,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 	let config: RpConfig = { ...DEFAULT_CONFIG };
 	let card: CharacterCard | null = null;
 	let entries: LorebookEntry[] = [];
-	/** 卡作者状态栏格式（StatusBlock / state1…）；空=卡未设计，勿硬造 */
-	let statusBarFormats: string[] = [];
 	let state: WorldState = defaultState();
 	let stateFile = "";
 	// agent 自建面板（柱 2）：与 state 同一套「磁盘缓存 + 会话树快照」机制
@@ -1284,11 +1281,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			{
 				const cardAbs = resolvePath(ctx.cwd, config.card);
 				card = loadCardFile(cardAbs);
-				try {
-					statusBarFormats = cardStatusBarFormats(readCardRawJson(cardAbs).raw);
-				} catch {
-					statusBarFormats = [];
-				}
 			}
 
 			// 世界书只来自「已挂载的独立书（0..N 本）」+ agent 补充设定集；
@@ -1963,11 +1955,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		{
 			const cardAbs = resolvePath(cwd, config.card);
 			card = loadCardFile(cardAbs);
-			try {
-				statusBarFormats = cardStatusBarFormats(readCardRawJson(cardAbs).raw);
-			} catch {
-				statusBarFormats = [];
-			}
 		}
 		const fileGroups: LorebookEntry[][] = [];
 		for (const rel of mountedLorebookPaths(config)) {

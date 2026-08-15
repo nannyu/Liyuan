@@ -359,7 +359,7 @@ test("默认预设（§4.A）：config.preset 空 → 装 presets/默认.json；
 		assert.ok(resident.includes("感官细节"), "感官承接");
 		assert.ok(resident.includes("忌 AI 腔"), "忌AI腔承接");
 		// 篇幅兜底数据化：extractDraftRules 能从默认预设提出 wordRange
-		const rules = extractDraftRules(m.presetRuleTexts, m.statusBarFormats);
+		const rules = extractDraftRules(m.presetRuleTexts);
 		assert.deepEqual(rules.wordRange, { min: 800, max: 1500 }, "篇幅从默认预设提取");
 
 		// 用户预设在场：默认预设完全不装（不叠加）

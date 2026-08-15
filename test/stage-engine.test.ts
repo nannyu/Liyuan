@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -1294,74 +1294,6 @@ test("每轮修复可见性：draft_edit 修改后分段重同步（8/09 输出�
 	}
 });
 
-test("谢幕注入（§4.B）：卡定义状态栏 → 记账轮后注入合约点名，状态栏落树", async () => {
-	// 卡 first_mes 带 StatusBlock 示例 → 合约 v0 从卡状态栏识别生成
-	const cwd = mkdtempSync(join(tmpdir(), "liyuan-eng-"));
-	writeFileSync(
-		join(cwd, "card.json"),
-		JSON.stringify({
-			data: {
-				name: "云澜",
-				description: "{{user}}的师姐",
-				first_mes: "你来了。\n<StatusBlock>\n地点：山门\n</StatusBlock>",
-			},
-		}),
-	);
-	writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "card.json", userName: "沈舟" }));
-	mkdirSync(join(cwd, ".liyuan"), { recursive: true });
-	const sm = SessionManager.create(cwd, join(cwd, "sessions"));
-	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
-	try {
-		let curtainCtx = "";
-		reg.setResponses([
-			fauxAssistantMessage([fauxToolCall("beat_plan", { steps: ["推门"] })], { stopReason: "toolUse" }),
-			fauxAssistantMessage(
-				[fauxToolCall("draft_append", { segment: "他推门进屋，炉火将熄。" })],
-				{ stopReason: "toolUse" },
-			),
-			// 首次 seal：路标没勾 → 判定回执拦下（8/12 放宽：判定送达不依赖路标勾选）
-			fauxAssistantMessage([fauxToolCall("draft_seal", {})], { stopReason: "toolUse" }),
-			// 二次 seal：照常受理 → seal 后工具轮注入记账
-			fauxAssistantMessage([fauxToolCall("draft_seal", {})], { stopReason: "toolUse" }),
-			// 记账轮：模型停手（没有变动）→ 日程推进到谢幕注入
-			fauxAssistantMessage([fauxThinking("这拍演完了。")]),
-			// 谢幕轮：按合约输出状态栏
-			(ctx: { messages?: unknown[] }) => {
-				curtainCtx = JSON.stringify(ctx.messages ?? []);
-				return fauxAssistantMessage("<StatusBlock>\n地点：屋内\n</StatusBlock>");
-			},
-			fauxScribeEmpty(),
-		] as never);
-		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"));
-		await engine.performTurn("你先进去。");
-
-		assert.ok(
-			curtainCtx.includes("【谢幕】记账已毕。输出本拍格式块：`<StatusBlock>` 状态栏。输出完本拍结束。"),
-			"谢幕注入 = 合约点名（文案即规格）",
-		);
-		const branch = sm.getBranch() as Array<{
-			type: string;
-			message?: { role?: string; content?: Array<{ type?: string; text?: string }>; details?: { rpTimeline?: unknown } };
-		}>;
-		const lastMsg = [...branch].reverse().find((e) => e.type === "message" && e.message?.role === "assistant");
-		const treeText = (lastMsg?.message?.content ?? [])
-			.filter((c) => c.type === "text")
-			.map((c) => c.text ?? "")
-			.join("");
-		assert.ok(treeText.includes("他推门进屋"), "正文在树上");
-		assert.ok(treeText.includes("StatusBlock"), "谢幕轮产出经 mergeFinalText 拼接落树");
-		// 分段同构：状态栏是独立尾巴段（非稿段），排在最后
-		const tl = (lastMsg?.message?.details?.rpTimeline ?? []) as Array<{ kind: string; text?: string; draft?: boolean }>;
-		const textSegs = tl.filter((s) => s.kind === "text");
-		assert.ok(textSegs.length >= 2, "稿段 + 尾巴段");
-		const tail = textSegs[textSegs.length - 1];
-		assert.ok((tail.text ?? "").includes("StatusBlock") && tail.draft !== true, "状态栏收成独立尾巴末段");
-	} finally {
-		reg.unregister();
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
-
 test("记账注入（§2.3）：seal 后席位保证；本拍已有落账（结构信号）则跳过", async () => {
 	const { cwd, sm } = makeStage();
 	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
@@ -1706,7 +1638,7 @@ test("进度行场面包投影（8/12 skill指导删除后）：包名投影按�
 
 
 
-test("引擎：输出合约 v1 声明步（M-R4 首件）——一次声明落数据、谢幕照单点名、指纹缓存零重复调用", async () => {
+test("引擎：谢幕不再点名格式块——输出格式归卡/预设作者的散文与正则（合约整链退场）", async () => {
 	const { cwd, sm } = makeStage();
 	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
 	try {
@@ -1716,20 +1648,15 @@ test("引擎：输出合约 v1 声明步（M-R4 首件）——一次声明落�
 			return r;
 		};
 		reg.setResponses([
-			// 拍1 第一发＝装载声明（旁路窄上下文）：声明出识别器认不出的 options（此卡 v0 合约恒空）
-			fauxAssistantMessage(
-				'{"modules":[{"tag":"state1","source":"card","form":"pair","hint":"状态栏"},{"tag":"options","source":"card","form":"pair","hint":"行动选项"}]}',
-			),
 			cap(fauxAssistantMessage("云澜垂眸受了半礼。")),
-			cap(fauxAssistantMessage("")), // 代收回执轮
-			cap(fauxAssistantMessage("")), // 记账注入轮
-			cap(fauxAssistantMessage("<state1>\n地点：山门\n</state1>\n<options>\n1. 上前\n</options>")), // 谢幕轮
-			fauxScribeEmpty(),
-			// 拍2：应答序列不含声明位——指纹命中缓存，引擎不得再发声明调用
-			fauxAssistantMessage("第二拍正文。"),
-			fauxAssistantMessage(""),
-			fauxAssistantMessage(""),
-			fauxAssistantMessage("<state1>\n地点：院内\n</state1>\n<options>\n1. 告辞\n</options>"),
+			cap(fauxAssistantMessage("")), // 封笔轮
+			// 记账+尾巴同轮：world_state_update 工具调用，同一流里 text 尾巴（真实模型行为）
+			cap(
+				fauxAssistantMessage([
+					{ type: "text", text: "<state1>\n地点：山门\n</state1>" },
+					fauxToolCall("world_state_update", { patch: { location: "山门" } }),
+				]),
+			),
 			fauxScribeEmpty(),
 		] as never);
 		const engine = new StageEngine({
@@ -1738,34 +1665,18 @@ test("引擎：输出合约 v1 声明步（M-R4 首件）——一次声明落�
 			getModel: () => reg.getModel("faux-rp") as never,
 			getAuth: async () => ({}),
 			streamFn: streamSimple as unknown as StageStreamFn,
-			declareContract: true,
 		});
 		await engine.performTurn("我上前行礼。");
 
-		// 声明落成数据：指纹缓存 + 用户可改合约文件（syncOutputContract 正常走）
-		const declared = JSON.parse(readFileSync(join(cwd, ".liyuan", "output-contract.declared.json"), "utf8")) as {
-			fingerprint: string;
-			modules: Array<{ tag: string }>;
-		};
-		assert.deepEqual(declared.modules.map((m) => m.tag), ["state1", "options"]);
-		const contract = JSON.parse(readFileSync(join(cwd, ".liyuan", "output-contract.json"), "utf8")) as {
-			modules: Array<{ tag: string }>;
-		};
-		assert.deepEqual(contract.modules.map((m) => m.tag), ["state1", "options"]);
-
-		// 谢幕注入照单点名（hint 是点名标签）
-		const curtain = ctxs.map((t) => t).find((t) => t.includes("【谢幕】"));
-		assert.ok(curtain, "谢幕注入在场（v0 时代此卡合约恒空、谢幕不发生）");
-		assert.ok(curtain!.includes("`<state1>` 状态栏") && curtain!.includes("`<options>` 行动选项"), "照单点名");
-
-		// 定稿含声明的两个块
-		const tree1 = JSON.stringify(sm.getBranch());
-		assert.ok(tree1.includes("<options>") && tree1.includes("上前"), "options 块入稿");
-
-		await engine.performTurn("再走近一步。");
-		const tree2 = JSON.stringify(sm.getBranch());
-		assert.ok(tree2.includes("第二拍正文"), "拍2 走通＝没有多余的声明调用吃掉应答");
-		assert.ok(tree2.includes("告辞"), "拍2 谢幕块照常");
+		// 全仓库不再有任何提到状态栏/格式块的送模文案——谢幕注入整链退场
+		assert.ok(!ctxs.some((t) => t.includes("【谢幕】")), "无谢幕注入");
+		assert.ok(!ctxs.some((t) => t.includes("格式块")), "无格式块点名");
+		// 合约文件不再生成
+		assert.ok(!existsSync(join(cwd, ".liyuan", "output-contract.declared.json")), "不再声明落盘");
+		assert.ok(!existsSync(join(cwd, ".liyuan", "output-contract.json")), "不再生成合约文件");
+		// 作者标签随正文照常入稿（mergeFinalText 认块形不认名字）
+		const tree = JSON.stringify(sm.getBranch());
+		assert.ok(tree.includes("<state1>") && tree.includes("山门"), "作者标签入稿");
 	} finally {
 		reg.unregister();
 		rmSync(cwd, { recursive: true, force: true });

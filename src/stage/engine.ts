@@ -48,16 +48,6 @@ import {
 	type StageMaterials,
 } from "./materials.ts";
 import {
-	buildDeclarePrompt,
-	declareFingerprint,
-	ensureDeclaredContract,
-} from "./contract-declare.ts";
-import {
-	contractFromCard,
-	curtainInjection,
-	syncOutputContract,
-} from "./output-contract.ts";
-import {
 	MANUAL_MIN_COMPACT_CHARS,
 	runCompaction,
 	SUMMARY_ENTRY_TYPE,
@@ -200,12 +190,6 @@ export interface StageEngineDeps {
 	getThinking?: () => string | undefined;
 	/** 账本磁盘缓存路径（.liyuan-state/<sessionId>.json）；给出则场记落盘（fs.watch → state 帧） */
 	getStateFile?: (sessionId: string) => string | undefined;
-	/**
-	 * 输出合约 v1 声明步（M-R4 首件）：装载期一次性旁路模型调用，声明本卡+预设的
-	 * 谢幕格式块清单（落 .liyuan/output-contract.declared.json，按指纹缓存）。
-	 * 未开启/声明失败 = v0 识别器供数（保守回退，不阻塞开演）。
-	 */
-	declareContract?: boolean;
 	/** 剧情库检索（memory_search 工具用）；未注入 = 该工具恒返回无命中 */
 	searchMemory?: (sessionId: string, query: string) => Promise<MemoryHitLike[]>;
 	/**
@@ -449,8 +433,6 @@ export class StageEngine {
 	#warnedMacros = "";
 	#warnedAuditDrop = 0;
 	#warnedProtocolDrop = "";
-	/** 合约声明失败的指纹（本进程不再重试同指纹——失败不落缓存，重启/换卡自然重试） */
-	#declareFailedFp = "";
 	#lastAssemblyJson = "";
 
 	constructor(deps: StageEngineDeps) {
@@ -661,32 +643,6 @@ export class StageEngine {
 			rosterIndex: formatRosterIndex(state),
 		});
 
-		// §4.B 输出合约：v1 供数＝装载期一次性模型声明（M-R4 首件，指纹缓存，换卡/改预设即重声明）；
-		// 未开启/声明失败 → v0 识别器供数（冻结、只降不升）。文件用户可改、改了以文件为准。
-		// 谢幕注入消费合约——全仓库唯一提到状态栏的送模文案；合约空则不注入，拍自然收束。
-		let contractGen = contractFromCard(materials.statusBarFormats);
-		if (this.#deps.declareContract) {
-			const fp = declareFingerprint(card, materials.presetDoc);
-			if (fp !== this.#declareFailedFp) {
-				const declared = await ensureDeclaredContract(cwd, fp, async () => {
-					ev.onActivity?.("装载声明：输出合约（本套卡+预设一次性）");
-					const p = buildDeclarePrompt(card, materials.presetDoc);
-					// 声明是判断题：放开思考（透传会话档），maxTokens 给足防隐形思考烧光配额（8/02 教训）
-					return this.#sideText(
-						model,
-						p.systemPrompt,
-						p.userText,
-						await this.#deps.getAuth(model),
-						8192,
-						this.#deps.getThinking?.(),
-					);
-				});
-				if (declared) contractGen = declared;
-				else this.#declareFailedFp = fp;
-			}
-		}
-		const curtain = curtainInjection(syncOutputContract(cwd, contractGen));
-
 		// 末端消息 = 动态注入 + 本拍用户原话。
 		// 顺序要紧：用户当拍的话必须落在**整个上下文的最后一句**。
 		// 注入块（世界状态/索引等）压在提问之后时，模型会把提问读成历史里的旧话，
@@ -795,7 +751,6 @@ export class StageEngine {
 				// skill_read 名单投影 + 必定读取（每轮）skill 集合（受理门用）
 				skillNames,
 				forcedSkills,
-				...(curtain ? { curtain } : {}),
 				_blog,
 			});
 			if (turn.final) final = turn.final;
@@ -1015,8 +970,6 @@ export class StageEngine {
 		skillNames: string[];
 		/** 必定读取（每轮）skill 名单：落笔前受理门强制先读（制造停顿=死磕燃料） */
 		forcedSkills: string[];
-		/** 谢幕注入文案（输出合约非空才有；无 = 不注入，拍自然收束） */
-		curtain?: string;
 		/** 全流程文字留档 */
 		_blog?: (event: string, data: string) => void;
 	}): Promise<{ final: AssistantMsgLike | null; errored?: string; text: string; tailText?: string }> {
@@ -1067,7 +1020,6 @@ export class StageEngine {
 		const skillReadDone = new Set<string>(); // 重复读瘦身：本拍已读过全文的 skill 名
 		let ledgerInjected = false;
 		let ledgerDone = false;
-		let curtainInjected = false;
 		// 稿首次落地时的 text 长度：之前的 text 是读题/计划旁白（工具轮的 text 通道产出），
 		// 不算正文也不算尾巴；之后的 text 才是尾巴候选（状态栏等）。-1 = 稿未落地。
 		let tailStart = -1;
@@ -1103,15 +1055,11 @@ export class StageEngine {
 							verdictInjected = true;
 							convo.push(inject(verdictInjection(o.ws, o.wsDeps.userName, o.wsDeps.rules.wordRange)));
 						} else {
-							// 兜底封笔（催告已给过/全量稿天然封笔）→ 记账 → 谢幕：停手不越站
+							// 兜底封笔（催告已给过/全量稿天然封笔）→ 记账：停手不越站
 							if (!o.ws.sealed) runWriteTool(o.ws, o.wsDeps, "draft_seal", {});
 							if (!ledgerDone && !ledgerInjected && o.ws.patches.length === 0 && o.ws.panelWrites === 0) {
 								ledgerInjected = true;
 								convo.push(inject(LEDGER_INJECTION));
-							} else if (o.curtain && !curtainInjected) {
-								ledgerDone = true;
-								curtainInjected = true;
-								convo.push(inject(o.curtain));
 							} else {
 								break; // 日程走完：本拍收束
 							}
@@ -1345,10 +1293,6 @@ export class StageEngine {
 							ledgerDone = true; // 记账轮结束（模型停止调用写账工具）
 						}
 					}
-					if (ledgerDone && o.curtain && !curtainInjected) {
-						curtainInjected = true;
-						convo.push(inject(o.curtain));
-					}
 				} else if (o.ws.plan.length > 0 || o.ws.draft.trim()) {
 					const allDone = o.ws.plan.length > 0 && o.ws.plan.every((s) => s.done);
 					// 判定以稿非空为门（8/10 实弹：0 字连勾两条也触发了判定＝勾选表演）；
@@ -1368,10 +1312,8 @@ export class StageEngine {
 			const ctx: Record<string, unknown> = { systemPrompt: o.systemPrompt, messages: convo };
 			if (!lastRound) ctx.tools = o.tools;
 			else {
-				// 触阀收场（D16）：收场句保留；状态栏点名并入谢幕注入（未给过则在此并入）
-				const close = "【收场】本拍轮次已达上限，工具已收起，就此收场。";
-				convo.push(inject(o.curtain && !curtainInjected ? `${close}\n\n${o.curtain}` : close));
-				curtainInjected = true;
+				// 触阀收场（D16）：只收场，不点名任何格式块——输出格式归卡/预设作者的散文与正则
+				convo.push(inject("【收场】本拍轮次已达上限，工具已收起，就此收场。"));
 			}
 
 			const s = this.#deps.streamFn(o.model, ctx as never, o.options);

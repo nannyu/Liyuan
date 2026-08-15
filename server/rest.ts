@@ -81,7 +81,6 @@ import {
 import { resolveConfigPath } from "../src/paths.ts";
 import { scanSkillFiles } from "../src/stage/materials.ts";
 import { deleteStageSkill, saveStageSkill } from "../src/stage/skill-store.ts";
-import { parseContract } from "../src/stage/output-contract.ts";
 import type { WorldlineView } from "../src/worldline.ts";
 import {
 	appendLorebookFileEntry,
@@ -1329,14 +1328,6 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				return true;
 			}
 
-			// ---- 输出合约（谢幕点名清单，§4.B）：只读投影；文件用户可改、改了以文件为准 ----
-			case "GET /api/output-contract": {
-				const file = join(host.cwd, ".liyuan", "output-contract.json");
-				const modules = existsSync(file) ? (parseContract(readFileSync(file, "utf8")) ?? []) : [];
-				const declared = existsSync(join(host.cwd, ".liyuan", "output-contract.declared.json"));
-				sendJson(res, 200, { modules, declared, file: ".liyuan/output-contract.json" });
-				return true;
-			}
 			// ---- 技能库：面板只读展示 + /skill:name 显式触发（触发经会话通道，同输入框打命令） ----
 			case "GET /api/skills": {
 				sendJson(res, 200, {

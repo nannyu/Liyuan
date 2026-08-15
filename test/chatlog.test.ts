@@ -63,15 +63,25 @@ test("清洗：提取模式——只保留正文标签内内容，多段拼接�
 	assert.equal(cleanChatText(noTag, { extractTag: "content" }), "*她犹豫了一下。*", "无标签命中的轮次回退为剥离模式");
 });
 
-test("清洗：剥离模式——默认思维链/状态栏标签、悬挂开标签、HTML 注释", () => {
+test("清洗：思维链 fold 整块删、悬挂开标签剥到末尾、HTML 注释去除", () => {
 	const raw = "<!-- 预设注释 -->\n*正文开始。*\n<think>推理过程</think>\n\n\n「对白。」\n<status>HP:5";
 	const out = cleanChatText(raw);
-	assert.equal(out, "*正文开始。*\n\n「对白。」", "悬挂的 <status> 应剥到末尾，空行收敛");
+	// <think> fold：整块删。<status> 不再是 panel（状态栏渲染归作者正则，非名单）：
+	// unwrap 剥标签留内容——悬挂开标签吃到末尾，HP:5 作为正文保留。
+	// 送模侧本应由作者的 promptOnly 正则剥除，那条通道尚未接（已知遗留）。
+	assert.ok(!out.includes("推理过程"), "思维链整块删");
+	assert.ok(!out.includes("<status>"), "标签剥掉");
+	assert.ok(out.includes("*正文开始。*") && out.includes("「对白。」"), "正文保留");
+	assert.ok(out.includes("HP:5"), "状态栏内容 unwrap 留正文（待接 promptOnly 通道）");
 });
 
-test("清洗：三段式卡输出（analysis/status/plot）——剥两段拆一段", () => {
+test("清洗：三段式卡输出（analysis fold 删 / status 与 plot unwrap 留内容）", () => {
 	const raw = "<descriptive_analysis>1. 意图…</descriptive_analysis>\n<normal_status>```yaml\n时间: 清晨\n```</normal_status>\n<plot>\n*正文在此。*\n</plot>";
-	assert.equal(cleanChatText(raw), "*正文在此。*");
+	const out = cleanChatText(raw);
+	assert.ok(!out.includes("意图"), "analysis fold：整块删");
+	assert.ok(!out.includes("<normal_status>") && !out.includes("<plot>"), "标签剥掉");
+	assert.ok(out.includes("*正文在此。*"), "plot 正文保留");
+	assert.ok(out.includes("时间: 清晨"), "状态栏内容 unwrap 留（待接 promptOnly 通道）");
 });
 
 test("清洗批量：清空的消息被丢弃", () => {

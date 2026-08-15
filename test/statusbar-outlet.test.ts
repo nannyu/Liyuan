@@ -14,7 +14,6 @@ import { test } from "node:test";
 
 import { classifyTag } from "../src/postprocess.ts";
 import { dedupeIdenticalBlocks, formatTailStart, mergeFinalText } from "../src/stage/engine.ts";
-import { splitStatusParts } from "../web/src/statusBlocks.ts";
 
 // ---------- ① mergeFinalText：尾巴只取格式块 ----------
 
@@ -97,25 +96,12 @@ test("mergeFinalText：尾巴里的重复状态栏在定稿中只留一份", () 
 	assert.equal((merged.match(/<StatusBlock>/g) ?? []).length, 1);
 });
 
-// ---------- ② stateN 渲染两端对齐（吐源码的渲染半截） ----------
+// ---------- ② 8/15 起：自定义标签一律 unwrap，渲染交作者正则（对齐酒馆，无标签名单） ----------
 
-test("classifyTag：stateN → panel（不再 unwrap 剥壳当正文）", () => {
-	assert.equal(classifyTag("state1"), "panel");
-	assert.equal(classifyTag("state_2"), "panel");
-	assert.equal(classifyTag("stateless"), "unwrap", "非序号形不误伤");
-});
-
-test("splitStatusParts：<state1> 抽成状态面板，正文不残留标签", () => {
-	const parts = splitStatusParts('正文一句。\n\n<state1>\n🕰️时间: "23:10"\n📍地点: 展演会\n</state1>');
-	const status = parts.find((p) => p.kind === "status");
-	assert.ok(status);
-	if (status.kind === "status") {
-		assert.equal(status.tag, "state1");
-		assert.ok(status.body.includes("23:10"));
-	}
-	const text = parts.find((p) => p.kind === "text");
-	assert.ok(text);
-	if (text.kind === "text") {
-		assert.ok(!text.text.includes("state1"));
-	}
+test("classifyTag：stateN 不再当 panel——未识别标签 unwrap，渲染归作者正则", () => {
+	assert.equal(classifyTag("state1"), "unwrap");
+	assert.equal(classifyTag("state_2"), "unwrap");
+	assert.equal(classifyTag("StatusBlock"), "unwrap");
+	assert.equal(classifyTag("状态栏"), "unwrap");
+	assert.equal(classifyTag("thinking"), "fold", "思考类仍折叠（名称模式，非状态栏名单）");
 });

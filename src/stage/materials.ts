@@ -11,8 +11,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
-import { loadCardFile, readCardRawJson, applyMacros } from "../card.ts";
-import { cardStatusBarFormats } from "../cardfront.ts";
+import { loadCardFile, applyMacros } from "../card.ts";
 import {
 	applyDisabledLore,
 	constantEntries,
@@ -70,8 +69,6 @@ export interface StageMaterials {
 	markerMaterials: MarkerMaterials;
 	/** 任一渠道有启用块——扮演规范让位给预设的判定依据 */
 	presetActive: boolean;
-	/** 卡作者状态栏格式（StatusBlock / state1…）；空=卡未设计，勿硬造 */
-	statusBarFormats: string[];
 	/** 宏求值遇到的清单外宏名（供引擎降级告警） */
 	macroWarnings: string[];
 	/** M-C2：被判死的外部插件协议条目（世界书通道 H 类退场，进装配报告） */
@@ -157,12 +154,6 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 
 	const cardAbs = resolvePath(cwd, config.card);
 	const card = loadCardFile(cardAbs);
-	let statusBarFormats: string[] = [];
-	try {
-		statusBarFormats = cardStatusBarFormats(readCardRawJson(cardAbs).raw);
-	} catch {
-		statusBarFormats = [];
-	}
 
 	// 世界书：已挂载独立书（0..N）+ 补充设定集 overlay；卡内 character_book 不自动进上下文
 	const fileGroups: LorebookEntry[][] = [];
@@ -260,7 +251,6 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		presetRuleTexts,
 		markerMaterials,
 		presetActive,
-		statusBarFormats,
 		macroWarnings: [...unsupported],
 		protocolDrops,
 	};

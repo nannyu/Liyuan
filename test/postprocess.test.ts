@@ -13,7 +13,7 @@ import {
 	resetDisplayTagExtras,
 } from "../src/postprocess.ts";
 
-test("结构块：分析 fold 删除，状态 panel 送模删除，plot unwrap 留正文", () => {
+test("结构块：分析 fold 删除，状态/plot unwrap 留正文（状态栏渲染归作者正则，非名单）", () => {
 	const raw = `<descriptive_analysis>
 1. 意图分析…
 2. 好感8（陌路之人阶段）
@@ -33,12 +33,13 @@ test("结构块：分析 fold 删除，状态 panel 送模删除，plot unwrap �
 
 </plot>`;
 	const out = cleanAssistantText(raw);
-	assert.ok(!out.includes("descriptive_analysis"));
+	assert.ok(!out.includes("descriptive_analysis"), "分析块 fold：整块删");
 	assert.ok(!out.includes("意图分析"));
-	assert.ok(!out.includes("normal_status"));
-	assert.ok(!out.includes("『时间』"));
-	assert.ok(!out.includes("<plot>"));
-	assert.ok(out.startsWith("*她咬了一口葱油饼"), "plot 内容应保留且顶格");
+	// normal_status 不再是 panel：标签 unwrap 剥掉，内容按正文留（送模历史里作者的
+	// promptOnly 正则本会剥它——但那条通道尚未接，此处内容留在历史是已知遗留）
+	assert.ok(!out.includes("<normal_status>"), "状态标签本身剥掉");
+	assert.ok(!out.includes("<plot>"), "plot 标签剥掉");
+	assert.ok(out.includes("*她咬了一口葱油饼"), "plot 内容保留");
 	assert.ok(out.includes("「短剑在你自己的行囊里。」"));
 });
 
@@ -47,7 +48,7 @@ test("悬挂开标签剥到末尾；无结构块的文本只做空白收敛", ()
 	assert.equal(cleanAssistantText("行尾空白   \n\n\n\n下一段。"), "行尾空白\n\n下一段。");
 });
 
-test("displayAssistantText：假思维链隐去，状态栏保留，未知标签 unwrap", () => {
+test("displayAssistantText：假思维链隐去，状态栏标签 unwrap 留内容，未知标签 unwrap", () => {
 	const raw = `<draft_notes>
 本轮分析：用户要润墨
 </draft_notes>
@@ -73,8 +74,9 @@ test("displayAssistantText：假思维链隐去，状态栏保留，未知标签
 	assert.ok(!out.includes("</content>"));
 	assert.ok(!out.includes("Prism"), "HTML 注释应隐去");
 	assert.ok(!out.includes("### 正文"), "分隔标题应隐去");
-	assert.ok(out.includes("<StatusBlock>"), "状态栏保留给前端面板");
-	assert.ok(out.includes("地点:御书房"));
+	// StatusBlock 不再是 panel：标签剥掉、内容留正文（作者写了正则才会渲染成界面）
+	assert.ok(!out.includes("<StatusBlock>"), "状态栏标签剥掉，不再保留给梨园面板");
+	assert.ok(out.includes("地点:御书房"), "状态栏内容作为正文保留");
 	assert.ok(out.includes("文舒婉听话了"));
 	assert.ok(out.includes("她拿起墨条"));
 });
@@ -92,8 +94,9 @@ test("未知标签默认 unwrap：内容渲染、标签消失（不必预先登�
 test("classifyTag：模式分类，不靠精确名单", () => {
 	assert.equal(classifyTag("thinking"), "fold");
 	assert.equal(classifyTag("My_Custom_Thought"), "unwrap"); // 不像思考
-	assert.equal(classifyTag("StatusBlock"), "panel");
-	assert.equal(classifyTag("normal_status"), "panel");
+	assert.equal(classifyTag("StatusBlock"), "unwrap"); // 状态栏不再是 panel——渲染归作者正则
+	assert.equal(classifyTag("normal_status"), "unwrap");
+	assert.equal(classifyTag("state1"), "unwrap");
 	assert.equal(classifyTag("haurki准则"), "strip");
 	assert.equal(classifyTag("content"), "unwrap");
 	assert.equal(classifyTag("正文"), "unwrap");
@@ -159,13 +162,13 @@ test("状态栏 body 内 summary 等标签 unwrap，围栏保留", () => {
 	assert.ok(out.includes("互动角色"));
 });
 
-test("prepareDisplayText: 先皮肤再策略——state 标记不被 unwrap 拆掉", () => {
+test("prepareDisplayText: 先皮肤再策略——有正则的 state 标记不被 unwrap 抢先拆掉", () => {
 	const raw = `叙事一句。\n\n<state1>\n时间: 清晨\n地点: 街道\n</state1>`;
-	// 无皮肤：state1 是状态栏（panel）——原样保留，前端抽成梨园统一状态卡。
-	// （8/10 修：旧行为是 unwrap 剥壳、body 摊平进正文＝实弹「状态栏吐源码」）
+	// 无作者正则：state1 是未识别标签 → unwrap 剥壳留内容（对齐酒馆 DOMPurify）。
+	// 状态栏成不成界面，取决于作者写没写正则，不取决于梨园的标签名单。
 	const plain = prepareDisplayText(raw, null);
-	assert.ok(plain.includes("<state1>"));
-	assert.ok(plain.includes("时间: 清晨"));
+	assert.ok(!plain.includes("<state1>"), "无正则时标签剥掉");
+	assert.ok(plain.includes("时间: 清晨"), "内容作为正文保留");
 
 	// 有皮肤：先换成围栏 HTML，再跳过 unwrap
 	const skin = {

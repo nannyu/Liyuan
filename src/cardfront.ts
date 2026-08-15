@@ -69,66 +69,6 @@ export function extractRegexScripts(raw: Record<string, unknown>): unknown[] {
 	return Array.isArray(ext.regex_scripts) ? ext.regex_scripts : [];
 }
 
-/**
- * 卡作者是否设计了「状态栏」输出格式（美化正则 / 开场示例里的 StatusBlock、stateN 等）。
- * 用于 harness：有则剧情回合必须写状态栏——与用户预设是否开启无关。
- * 检测时**包含 disabled 规则**（作者设计仍在，只是显示开关）。
- */
-export function cardStatusBarFormats(raw: Record<string, unknown> | null | undefined): string[] {
-	if (!raw || typeof raw !== "object") return [];
-	const found = new Set<string>();
-	const note = (s: string) => {
-		if (/StatusBlock|status_block/i.test(s)) found.add("`<StatusBlock>…</StatusBlock>`");
-		if (/<\s*state\d+|state\\d|<\(state/i.test(s) || /多状态栏|状态展示/i.test(s)) {
-			found.add("`<state1>…</state1>`（或卡约定的 state 序号）");
-		}
-		// 与 PANEL_NAME_RE / statusBlocks 对齐：这些标签渲染端都支持，检测端也要认
-		if (/normal_?status/i.test(s)) found.add("`<normal_status>…</normal_status>`");
-		if (/special_?status/i.test(s)) found.add("`<special_status>…</special_status>`");
-		if (/char(?:acter)?_?status/i.test(s)) found.add("`<character_status>…</character_status>`");
-		// 独立 <status> / <statusbar>（排除已被上面捕获的复合词）
-		if (/<status[\s>]|<statusbar[\s>]/i.test(s) && !found.size) {
-			found.add("`<status>…</status>`");
-		}
-	};
-	for (const s of extractRegexScripts(raw)) {
-		if (!s || typeof s !== "object") continue;
-		const r = s as Record<string, unknown>;
-		const blob = [
-			typeof r.scriptName === "string" ? r.scriptName : "",
-			typeof r.findRegex === "string" ? r.findRegex : "",
-			typeof r.replaceString === "string" ? r.replaceString.slice(0, 400) : "",
-		].join("\n");
-		note(blob);
-		// 卡作者自定义占位标签（如「模拟修仙」的 <StatusPlaceHolderImpl/>）：
-		// 规则名含"状态栏/status"、findRegex 含 <Tag> 或 <Tag/> → 视为卡自定义状态栏格式。
-		// 不能只扫内容——标签名千变万化，scriptName 是唯一可靠的意图信号。
-		const name = typeof r.scriptName === "string" ? r.scriptName : "";
-		const find = typeof r.findRegex === "string" ? r.findRegex : "";
-		if (/状态栏|status/i.test(name) && !found.size) {
-			const tagM = find.match(/<([A-Za-z_][\w]*)\s*\/?>/);
-			if (tagM) {
-				const tag = tagM[1];
-				// 自闭合占位 <Tag/> vs 成对 <Tag>…</Tag>
-				const selfClose = find.includes("/>");
-				found.add(selfClose ? `\`<${tag}/>\`` : `\`<${tag}>…</${tag}>\``);
-			}
-		}
-	}
-	const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
-	const greet = [
-		typeof data.first_mes === "string" ? data.first_mes : "",
-		...(Array.isArray(data.alternate_greetings) ? data.alternate_greetings.map((g) => String(g ?? "")) : []),
-	].join("\n");
-	note(greet);
-	// 卡说明 / 系统提示 / 后置指令也可能定义状态栏格式（不只在显示正则和开场白里）
-	for (const field of ["description", "system_prompt", "post_history_instructions", "personality"] as const) {
-		const v = data[field];
-		if (typeof v === "string" && v) note(v);
-	}
-	return [...found];
-}
-
 /** "/pattern/flags" → {source, flags};裸串按字面源、默认 g */
 function parseFindRegex(find: string): { source: string; flags: string } | null {
 	const m = /^\/([\s\S]+)\/([a-z]*)$/.exec(find.trim());
