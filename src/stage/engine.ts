@@ -26,6 +26,7 @@ import {
 import { loadCodexEntries } from "../codex.ts";
 import { formatPanelIndex, formatPanelSnapshot, loadPanels } from "../panels.ts";
 import { dir } from "../paths.ts";
+import { classifyTag, scanTaggedBlocks } from "../postprocess.ts";
 import { formatRosterIndex, formatState, saveState } from "../state.ts";
 import { isBackstageText } from "../stance.ts";
 import type { LorebookEntry } from "../types.ts";
@@ -345,8 +346,13 @@ function replaceProgressLine(convo: unknown[], line: string): void {
  * draft_write 只交了 679 字正文，状态栏与咪咪点评凭空蒸发）。
  * 但也不能无脑全拼——纯文本尾巴（"就这样吧。"）是收笔闲聊，不该进正文。
  */
-const FORMAT_TAIL_RE = /<(?:[A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff.\-]*)(?:\s[^>]*)?\/?\s*>/;
+const TAG_NAME_SRC = "[A-Za-z_\\u4e00-\\u9fff][\\w\\u4e00-\\u9fff.\\-]*";
 const FENCE_LINE_RE = /^```/m;
+const FENCE_BLOCK_RE = /```[\s\S]*?```/g;
+/** 逐个扫标签名，用于跳过 fold/strip 类（它们不是格式内容） */
+const TAG_SCAN_RE = new RegExp(`<(${TAG_NAME_SRC})(?:\\s[^>]*)?\\/?\\s*>`, "g");
+/** 成对块，用于把 fold/strip 类整块从尾巴里剔掉 */
+const SELF_CLOSING_RE = new RegExp(`<(${TAG_NAME_SRC})(?:\\s[^>]*)?\\/\\s*>`, "g");
 
 /**
  * 尾巴里格式内容的起点（第一个尖括号标签或行首 ``` 围栏）；没有 → -1。
@@ -357,10 +363,65 @@ const FENCE_LINE_RE = /^```/m;
  * 起切，之前的自由文本一律丢弃；纯自由文本尾巴（闲聊收笔）仍整段不进正文。
  */
 export const formatTailStart = (tail: string): number => {
-	const tag = FORMAT_TAIL_RE.exec(tail)?.index ?? -1;
+	TAG_SCAN_RE.lastIndex = 0;
+	let tag = -1;
+	for (let m = TAG_SCAN_RE.exec(tail); m; m = TAG_SCAN_RE.exec(tail)) {
+		if (classifyTag(m[1]!) === "unwrap") {
+			tag = m.index;
+			break;
+		}
+	}
 	const fence = FENCE_LINE_RE.exec(tail)?.index ?? -1;
 	if (tag < 0) return fence;
 	return fence < 0 ? tag : Math.min(tag, fence);
+};
+
+
+
+/**
+ * 尾巴 → **只留格式内容**：格式类标签块 + ``` 围栏块，按原序拼回；块之外的自由文本
+ * 一律丢弃。
+ *
+ * 8/10 只挡了「格式块之前」的自由文本（起点切一刀）。8/16 实弹暴露另一半：模型在
+ * 尾巴里把**整段正文重述了一遍**，夹在 `<time_format>` 与 `<options>` 之间——起点切
+ * 不到它（它在第一个格式块之后），`trimContentBodyRepeat` 也管不到（它只认
+ * `<content>` 包裹的重述）。于是定稿里正文出现两遍。
+ *
+ * 判据仍是「块 vs 非块」，不认名字：块＝成对标签（policy 由 classifyTag 定，fold/strip
+ * 类不算格式内容）或 ``` 围栏。
+ */
+const formatContentOnly = (tail: string): string => {
+	type Span = { start: number; end: number; text: string };
+	const spans: Span[] = [];
+	// 先剥 HTML 注释再扫块（同 extractDraftBody）：注释里的 `<Prism>` 这类会被当成无闭合
+	// 标签，一路吃到文末，把注释后面的裸重述正文整段包进「格式块」（8/16 实弹踩到）。
+	const src = tail.replace(/<!--[\s\S]*?-->/g, "");
+	FENCE_BLOCK_RE.lastIndex = 0;
+	for (let m = FENCE_BLOCK_RE.exec(src); m; m = FENCE_BLOCK_RE.exec(src)) {
+		spans.push({ start: m.index, end: m.index + m[0].length, text: m[0] });
+	}
+	for (const b of scanTaggedBlocks(src)) {
+		if (b.policy !== "unwrap") continue; // fold/strip 类不是格式内容
+		if (b.hanging) continue; // 无闭合＝不是成形的格式块，别拿它当筐把正文装进来
+		spans.push({ start: b.start, end: b.end, text: b.raw });
+	}
+	// 自闭合格式标签（`<StatusPlaceHolderImpl/>` 这类占位符）——scanTaggedBlocks 只找成对块
+	SELF_CLOSING_RE.lastIndex = 0;
+	for (let m = SELF_CLOSING_RE.exec(src); m; m = SELF_CLOSING_RE.exec(src)) {
+		if (classifyTag(m[1]!) !== "unwrap") continue;
+		spans.push({ start: m.index, end: m.index + m[0].length, text: m[0] });
+	}
+	spans.sort((a, b) => a.start - b.start || b.end - a.end);
+	const kept: Span[] = [];
+	for (const s of spans) {
+		const last = kept[kept.length - 1];
+		if (last && s.start < last.end) continue; // 被前一块覆盖（嵌套/重叠）
+		kept.push(s);
+	}
+	return kept
+		.map((s) => s.text.trim())
+		.filter(Boolean)
+		.join("\n\n");
 };
 
 /**
@@ -414,14 +475,14 @@ export const mergeFinalText = (draft: string, text: string): string => {
 	if (t.startsWith(d)) tail = t.slice(d.length);
 	const from = formatTailStart(tail);
 	if (from < 0) return d;
-	// 尾巴里 `<content>` 重述的正文裁掉（正文以稿件为准）
-	const tailPart = tail
-		.slice(from)
-		.trim()
+	// 尾巴只留格式内容（块之外的自由文本／重述正文一律丢）；`<content>` 里重述的正文再裁一次
+	const tailPart = formatContentOnly(tail.slice(from))
 		.replace(/<content>([\s\S]*?)<\/content>/g, (whole, inner: string) => {
 			const trimmed = trimContentBodyRepeat(d, inner);
 			return trimmed ? `<content>${trimmed}</content>` : "";
-		});
+		})
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
 	return dedupeIdenticalBlocks([d, tailPart].filter(Boolean).join("\n\n"));
 };
 

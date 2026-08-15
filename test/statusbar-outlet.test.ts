@@ -105,3 +105,82 @@ test("classifyTag：stateN 不再当 panel——未识别标签 unwrap，渲染�
 	assert.equal(classifyTag("状态栏"), "unwrap");
 	assert.equal(classifyTag("thinking"), "fold", "思考类仍折叠（名称模式，非状态栏名单）");
 });
+
+// ---------- ③ 8/16：fold/strip 类标签不算「格式内容」，不进定稿 ----------
+
+test("mergeFinalText：<thinking> 摆在格式块之前 → 整块不进定稿（8/16 实弹）", () => {
+	// 实弹形态：模型封笔+记账之后，尾巴以 <thinking> 收笔自检开头，后面才是状态栏。
+	// 旧口径「第一个标签就是格式起点」把整块思考收进定稿，再被作者 CoT 正则
+	// （^([\s\S]*</thinking>) 锚在开头且贪婪）连正文一起卷走、复制两遍。
+	const draft = "星辰厅的光白得晃眼。\n\n琴放在台侧。";
+	const tail = [
+		"<thinking>",
+		"我已经完成了本拍的所有步骤：规划、ask、列路标、封笔、记账。",
+		"检查一下所有要求：视角 ✓ 字数 ✓ state1 ✓ options 四项 ✓",
+		"</thinking>",
+		"",
+		"### 正文",
+		"",
+		'<state1>\n🕰️时间: "21:15"\n</state1>',
+		"<options>\n- 坐进车里\n</options>",
+	].join("\n");
+	const merged = mergeFinalText(draft, `${draft}\n\n${tail}`);
+
+	assert.ok(merged.startsWith(draft), "正文以稿件为准");
+	assert.ok(!merged.includes("<thinking>"), "思考块不进定稿");
+	assert.ok(!merged.includes("检查一下所有要求"), "收笔自检不进定稿");
+	assert.ok(!merged.includes("### 正文"), "思考块之前/之间的元话语一并丢弃");
+	assert.ok(merged.includes("<state1>"), "状态栏保留");
+	assert.ok(merged.includes("<options>"), "选项栏保留");
+	assert.equal((merged.match(/星辰厅的光白得晃眼/g) ?? []).length, 1, "正文不重复");
+});
+
+test("mergeFinalText：<thinking> 夹在格式块之后也剔掉（起点跳过挡不住的那种）", () => {
+	const draft = "正文。";
+	const tail = "<state1>x</state1>\n<thinking>顺带自检一下。</thinking>\n<options>y</options>";
+	const merged = mergeFinalText(draft, `${draft}\n\n${tail}`);
+	assert.ok(!merged.includes("<thinking>"), "中段的思考块同样不进定稿");
+	assert.ok(!merged.includes("顺带自检"), "思考内容不进定稿");
+	assert.ok(merged.includes("<state1>") && merged.includes("<options>"), "两侧格式块都保留");
+});
+
+test("mergeFinalText：尾巴里裸重述整段正文 → 只留格式块，正文不重复（8/16 实弹）", () => {
+	// 实弹形态：模型封笔后在 text 通道吐 <time_format> + 整段正文重述 + <options>。
+	// 重述不带 <content> 包裹，trimContentBodyRepeat 管不到；它又在第一个格式块之后，
+	// 起点切一刀也切不到 → 旧口径把它整段拼进定稿，正文出现两遍。
+	const draft = "我抬起头，看向他。\n\n窗外的光斜进来，落在桌沿上。";
+	const tail = [
+		"<time_format>",
+		"time: 星元历2001年7月5日·周五☆13:40-14:10",
+		"scene: 便民街·雀语咖啡馆",
+		"</time_format>",
+		"",
+		draft, // ← 裸重述
+		"",
+		"<options>\n下一步行动建议:\n - 【应下邀约】\n</options>",
+	].join("\n");
+	const merged = mergeFinalText(draft, tail);
+
+	assert.ok(merged.startsWith(draft), "正文以稿件为准");
+	assert.equal((merged.match(/我抬起头，看向他。/g) ?? []).length, 1, "正文不重复（旧口径是 2 遍）");
+	assert.ok(merged.includes("<time_format>"), "时间栏保留");
+	assert.ok(merged.includes("<options>"), "选项栏保留");
+	assert.ok(merged.includes("雀语咖啡馆"), "格式块内容完整");
+});
+
+test("mergeFinalText：自闭合格式标签（占位符）仍保留", () => {
+	const draft = "正文。";
+	const merged = mergeFinalText(draft, "<StatusPlaceHolderImpl/>\n\n闲话一句。");
+	assert.ok(merged.includes("<StatusPlaceHolderImpl/>"), "自闭合占位符是格式内容");
+	assert.ok(!merged.includes("闲话一句"), "块外自由文本仍丢弃");
+});
+
+test("formatTailStart：fold/strip 类标签不算格式起点，围栏与真格式块仍算", () => {
+	const t1 = "<thinking>想</thinking>\n<state1>x</state1>";
+	assert.equal(formatTailStart(t1), t1.indexOf("<state1>"), "跳过 <thinking>，落在 <state1>");
+	assert.equal(formatTailStart("<state1>x</state1>"), 0, "真格式块在开头就是 0");
+	const t2 = "元话语。\n```\n时间\n```";
+	assert.equal(formatTailStart(t2), t2.indexOf("```"), "围栏行仍是起点");
+	assert.equal(formatTailStart("<thinking>只有思考</thinking>"), -1, "只有 fold 类 → 无格式内容");
+	assert.equal(formatTailStart("就这样吧。"), -1, "纯自由文本 → -1");
+});
