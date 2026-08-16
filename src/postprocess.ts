@@ -29,6 +29,7 @@
  */
 
 import type { DisplayRule } from "./cardfront.ts";
+import { hasDepthLimits, rulesAtDepth } from "./cardfront.ts";
 import { applyCardSkin } from "./cardSkin.ts";
 
 export type TagPolicy = "fold" | "strip" | "unwrap";
@@ -294,6 +295,15 @@ export type DisplaySkin = {
 	charName: string;
 	userName: string;
 };
+
+/**
+ * 皮肤按消息深度收窄(酒馆 depth：0＝最新)。
+ * 没有深度限定 / 没有 skin 时原样返回同一个对象——不制造无谓的新引用。
+ */
+export function skinAtDepth(skin: DisplaySkin | null | undefined, depth: number): DisplaySkin | null {
+	if (!skin?.rules?.length || !hasDepthLimits(skin.rules)) return skin ?? null;
+	return { ...skin, rules: rulesAtDepth(skin.rules, depth) };
+}
 
 /**
  * 皮肤产物是否已是 HTML 界面载荷——此后禁止再跑标签 unwrap（会撕碎 div/script）。

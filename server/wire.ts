@@ -11,14 +11,17 @@
 import {
 	extractScaffoldThinking,
 	prepareDisplayText,
+	skinAtDepth,
 	type DisplaySkin,
 } from "../src/postprocess.ts";
+import { hasDepthLimits } from "../src/cardfront.ts";
 import { isBackstageText } from "../src/stance.ts";
 import { applyDraftOps, type DraftMsgLike } from "../src/draft.ts";
 import type { RpPanel } from "../src/panels.ts";
 import type { WorldState } from "../src/types.ts";
 
 export type { DisplaySkin };
+export { skinAtDepth };
 
 export type { WorldState, RpPanel };
 export { isBackstageText };
@@ -588,50 +591,137 @@ export function toWireMsg(m: unknown, names: WireNames, opts?: ToWireOpts): Wire
 }
 
 /**
+ * 折叠归属：每条 wire 消息落在折叠后数组的哪一格（同一格 = 会被并进同一个气泡）。
+ * 折叠与深度计数**共用这一份归属**——「一拍算几条消息」只能有一个答案，
+ * 两处平行判断迟早会互相追赶（状态栏名单三处平行的老账）。
+ */
+export function foldSlots(msgs: WireMsg[]): number[] {
+	const slots: number[] = [];
+	/** 当前剧情轮（上一条非 backstage user 之后）的角色气泡格位 */
+	let turnRoleSlot = -1;
+	let turnChannel: "narrative" | "backstage" | null = null;
+	let next = 0;
+
+	for (const m of msgs) {
+		if (m.channel === "user" && !m.backstage) {
+			turnRoleSlot = -1;
+			turnChannel = null;
+			slots.push(next++);
+			continue;
+		}
+		if (m.channel === "narrative" || m.channel === "backstage") {
+			if (turnRoleSlot >= 0 && turnChannel === m.channel) {
+				slots.push(turnRoleSlot);
+				continue;
+			}
+			turnRoleSlot = next;
+			turnChannel = m.channel;
+			slots.push(next++);
+			continue;
+		}
+		slots.push(next++);
+	}
+	return slots;
+}
+
+/**
  * 同一用户输入下的多条 narrative/backstage 折叠进一个气泡。
  * agent 多步工具轮若仍漏出多段正文，重放时也应是一泡而非叠楼。
  * 插图/选择卡等其它通道插在中间不打断「本轮角色泡」归属。
  */
 export function foldTurnNarratives(msgs: WireMsg[]): WireMsg[] {
+	const slots = foldSlots(msgs);
 	const out: WireMsg[] = [];
-	/** out 内当前剧情轮（上一条非 backstage user 之后）的 narrative/backstage 下标 */
-	let turnRoleIdx = -1;
-	let turnChannel: "narrative" | "backstage" | null = null;
 
 	const join = (a?: string, b?: string) => [a, b].map((s) => (s ?? "").trim()).filter(Boolean).join("\n\n");
 
-	for (const m of msgs) {
-		if (m.channel === "user" && !m.backstage) {
-			turnRoleIdx = -1;
-			turnChannel = null;
+	for (let i = 0; i < msgs.length; i++) {
+		const m = msgs[i];
+		const slot = slots[i];
+		// 新格位按序追加，故新格位下标恒等于当前长度；小于长度＝并进既有气泡
+		if (slot === out.length) {
 			out.push({ ...m });
 			continue;
 		}
-		if (m.channel === "narrative" || m.channel === "backstage") {
-			if (turnRoleIdx >= 0 && turnChannel === m.channel) {
-				const prev = out[turnRoleIdx];
-				const thinking = join(prev.thinking, m.thinking);
-				const unfinished = prev.unfinished === true || m.unfinished === true;
-				out[turnRoleIdx] = {
-					...prev,
-					text: join(prev.text, m.text),
-					...(thinking ? { thinking } : {}),
-					// 变体元数据以最后一段为准（annotateSwipes 挂在末条）
-					...(m.swipe ? { swipe: m.swipe } : prev.swipe ? { swipe: prev.swipe } : {}),
-					...(m.name ? { name: m.name } : {}),
-					...(unfinished ? { unfinished: true } : {}),
-				};
-				if (!unfinished) delete out[turnRoleIdx].unfinished;
-				continue;
-			}
-			turnRoleIdx = out.length;
-			turnChannel = m.channel;
-			out.push({ ...m });
-			continue;
-		}
-		out.push({ ...m });
+		const prev = out[slot];
+		const thinking = join(prev.thinking, m.thinking);
+		const unfinished = prev.unfinished === true || m.unfinished === true;
+		out[slot] = {
+			...prev,
+			text: join(prev.text, m.text),
+			...(thinking ? { thinking } : {}),
+			// 变体元数据以最后一段为准（annotateSwipes 挂在末条）
+			...(m.swipe ? { swipe: m.swipe } : prev.swipe ? { swipe: prev.swipe } : {}),
+			...(m.name ? { name: m.name } : {}),
+			...(unfinished ? { unfinished: true } : {}),
+		};
+		if (!unfinished) delete out[slot].unfinished;
 	}
 	return out;
+}
+
+/**
+ * 占深度的通道——**梨园自己发行的 wire 通道名**，不是作者措辞。
+ * 酒馆按「聊天消息」数深度：插图挂在消息上、压缩横幅是 system 消息（被 !is_system 滤掉），
+ * 都不是独立一条，故不占深度。
+ */
+const DEPTH_CHANNELS: ReadonlySet<WireChannel> = new Set<WireChannel>([
+	"user",
+	"narrative",
+	"backstage",
+	"greeting",
+	"import",
+]);
+
+/**
+ * 每条源消息的深度（酒馆语义：从最新往回数，0＝最新）。
+ *
+ * 计数单位是**折叠后的气泡**：一拍在梨园是十几条 message（多轮工具＋多段正文），
+ * 在酒馆眼里是一条消息。按原始条目数会让一拍吃掉十几个 depth，作者写的 maxDepth:2
+ * 连最新那条都落不上。
+ *
+ * 先「不套皮肤」走一遍定气泡：与酒馆一致（depth 取自未过正则的消息序列），
+ * 也避开「规则把某条清空 → 气泡数变了 → 深度变了」的自我循环。
+ * 代价是作者用了深度限定时 toWireMsg 跑两遍——第一遍无皮肤，不展开面板，是便宜的那一半。
+ */
+function depthPlan(patched: unknown[], names: WireNames): number[] {
+	const wired: Array<WireMsg | null> = [];
+	let backstage = false;
+	for (const m of patched) {
+		const role = (m as MsgLike | null)?.role;
+		if (role === "user") {
+			backstage = isBackstageText(textOf((m as MsgLike).content));
+		}
+		wired.push(toWireMsg(m, names, { backstage, skin: null }));
+	}
+
+	const shown = wired.filter((w): w is WireMsg => w !== null);
+	const slots = foldSlots(shown);
+	// 格位按序发放，故最大格位 +1 即格数（不用 Math.max 展开——长会话会把栈撑爆）
+	let slotCount = 0;
+	for (const s of slots) if (s + 1 > slotCount) slotCount = s + 1;
+
+	const counted = new Array<boolean>(slotCount).fill(false);
+	for (let i = 0; i < shown.length; i++) {
+		if (DEPTH_CHANNELS.has(shown[i].channel)) counted[slots[i]] = true;
+	}
+	// 深度 = 排在它后面的「占深度气泡」条数
+	const depthOfSlot = new Array<number>(slotCount).fill(0);
+	let after = 0;
+	for (let s = slotCount - 1; s >= 0; s--) {
+		depthOfSlot[s] = after;
+		if (counted[s]) after++;
+	}
+
+	// 回填到源消息下标；不上屏的那些留 0（它们不会被套皮肤，取值无意义）
+	const depths = new Array<number>(patched.length).fill(0);
+	let k = 0;
+	for (let i = 0; i < wired.length; i++) {
+		if (wired[i] === null) continue;
+		depths[i] = depthOfSlot[slots[k]];
+		k++;
+	}
+	return depths;
 }
 
 /** 全量历史 → wire 消息列表（hello 帧用）；先套稿纸补丁，沿途跟踪场外标记轮，助手回复分道 */
@@ -645,12 +735,15 @@ export function toWireHistory(
 	const skin = opts?.skin ?? null;
 	// 稿纸补丁（rp-draft-op）：显示层与送模层同一套函数（src/draft.ts），两侧看到同一份定稿
 	const { messages: patched } = applyDraftOps(messages as DraftMsgLike[]);
-	for (const m of patched) {
+	// 作者没用深度限定（绝大多数卡）→ depths 为 null，与改动前逐字同路
+	const depths = skin?.rules?.length && hasDepthLimits(skin.rules) ? depthPlan(patched, names) : null;
+	for (let i = 0; i < patched.length; i++) {
+		const m = patched[i];
 		const role = (m as MsgLike | null)?.role;
 		if (role === "user") {
 			backstage = isBackstageText(textOf((m as MsgLike).content));
 		}
-		const w = toWireMsg(m, names, { backstage, skin });
+		const w = toWireMsg(m, names, { backstage, skin: depths ? skinAtDepth(skin, depths[i]) : skin });
 		if (w) out.push(w);
 	}
 	return foldTurnNarratives(out);

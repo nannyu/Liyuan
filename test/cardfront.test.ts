@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { expandSkinReplacement } from "../src/cardSkin.ts";
+import { htmlLooksInteractive } from "../web/src/htmlEmbed.ts";
 import {
 	buildCardFrontSnapshot,
 	displayRules,
 	extractRegexScripts,
+	hasDepthLimits,
 	isSkinEnabled,
 	promptRules,
+	rulesAtDepth,
 	setSkinEnabled,
+	type DisplayRule,
 } from "../src/cardfront.ts";
 
 /** 淫宫美人录实卡形态(内联夹具,不读盘,测试自包含) */
@@ -153,17 +157,128 @@ test("displayRules: substituteRegex 非零的规则整条跳过,warn", () => {
 	}
 });
 
-test("displayRules: minDepth/maxDepth 字段忽略但 warn,规则仍应用", () => {
-	const warnings: string[] = [];
-	const oldWarn = console.warn;
-	try {
-		console.warn = (...args) => warnings.push(args.join(" "));
-		const rules = displayRules([{ ...skinScript, minDepth: 2 }]);
-		assert.equal(rules.length, 1);
-		assert.ok(warnings.some((w) => w.includes("深度限定")));
-	} finally {
-		console.warn = oldWarn;
-	}
+test("displayRules: minDepth/maxDepth 随规则带下去;越界/非数按酒馆同判当无限定", () => {
+	// 有效：min ≥ -1、max ≥ 0（含 0 与 -1 这两个边界）
+	assert.equal(displayRules([{ ...skinScript, minDepth: 3 }])[0].minDepth, 3);
+	assert.equal(displayRules([{ ...skinScript, maxDepth: 0 }])[0].maxDepth, 0);
+	assert.equal(displayRules([{ ...skinScript, minDepth: -1 }])[0].minDepth, -1);
+	assert.equal(displayRules([{ ...skinScript, minDepth: 0, maxDepth: 999 }])[0].maxDepth, 999);
+	// 无效（ST engine.js:363-371 的守卫不通过）→ 不带字段＝无限定
+	assert.equal(displayRules([{ ...skinScript, maxDepth: -1 }])[0].maxDepth, undefined);
+	assert.equal(displayRules([{ ...skinScript, minDepth: -2 }])[0].minDepth, undefined);
+	assert.equal(displayRules([{ ...skinScript, minDepth: null, maxDepth: null }])[0].minDepth, undefined);
+	assert.equal(displayRules([{ ...skinScript, minDepth: "x" }])[0].minDepth, undefined);
+	// 送模侧同一份解析口径
+	assert.equal(promptRules([{ ...promptOnlyScript, minDepth: 3 }])[0].minDepth, 3);
+});
+
+test("rulesAtDepth: 深度筛选逐条件对齐酒馆;depth 未知则不筛", () => {
+	const mk = (name: string, d: Partial<DisplayRule>): DisplayRule => ({
+		name,
+		source: "x",
+		flags: "g",
+		replace: "y",
+		...d,
+	});
+	const min3 = mk("隐藏历史", { minDepth: 3 });
+	const max2 = mk("折叠新的", { maxDepth: 2 });
+	const plain = mk("无限定", {});
+	const all = [min3, max2, plain];
+	const namesAt = (depth?: number) => rulesAtDepth(all, depth).map((r) => r.name);
+
+	// depth 0-2＝最新三条：只渲染，不删除
+	assert.deepEqual(namesAt(0), ["折叠新的", "无限定"]);
+	assert.deepEqual(namesAt(2), ["折叠新的", "无限定"], "maxDepth:2 的边界内");
+	// depth ≥3＝更旧：只删除，不渲染（严格互补，无重叠）
+	assert.deepEqual(namesAt(3), ["隐藏历史", "无限定"], "minDepth:3 的边界");
+	assert.deepEqual(namesAt(99), ["隐藏历史", "无限定"]);
+	// 无限定的规则任何深度都在
+	assert.deepEqual(rulesAtDepth([plain], 50), [plain]);
+	// depth 未知 → 原样返回（REST 快照、整楼界面判定等不遍历序列的调用点行为不变）
+	assert.deepEqual(namesAt(undefined), ["隐藏历史", "折叠新的", "无限定"]);
+	assert.equal(rulesAtDepth(all), all, "不筛时连新数组都不造");
+	// max=0 只落在最新那条
+	assert.deepEqual(rulesAtDepth([mk("仅最新", { maxDepth: 0 })], 0).length, 1);
+	assert.deepEqual(rulesAtDepth([mk("仅最新", { maxDepth: 0 })], 1).length, 0);
+});
+
+test("hasDepthLimits: 有没有深度限定决定要不要为算 depth 多走一遍", () => {
+	const base: DisplayRule = { name: "a", source: "x", flags: "g", replace: "y" };
+	assert.equal(hasDepthLimits([base]), false);
+	assert.equal(hasDepthLimits([base, { ...base, maxDepth: 2 }]), true);
+	assert.equal(hasDepthLimits([{ ...base, minDepth: 0 }]), true, "min=0 也是限定,别被 falsy 吃掉");
+	assert.equal(hasDepthLimits([]), false);
+});
+
+/** 页面级 CSS：顶层 <style>/<script> 的替换串（修仙世界模拟器 [美化]状态栏 实卡形态） */
+const pageScopedScript = {
+	scriptName: "[美化]状态栏",
+	findRegex: "/<StatusBar>([\\s\\S]*?)<\\/StatusBar>/gi",
+	replaceString: '<style>\n.xzs-b{white-space:pre-line}\n</style>\n<div class="xzs"><div class="xzs-b">$1</div></div>',
+	placement: [2],
+	disabled: false,
+	markdownOnly: true,
+	promptOnly: false,
+};
+
+test("页面级 <style>: 替换串包成围栏整份文档,样式与结构同框(两种顺序都认)", () => {
+	const styleFirst = displayRules([pageScopedScript])[0].replace;
+	assert.match(styleFirst, /```html\n<!DOCTYPE html>/, "合成围栏整份文档,走现成 iframe 通道");
+	assert.match(styleFirst, /^\n\n```html/, "围栏必须落在行首——替换点可能在句中");
+	const doc = /```html\n([\s\S]*?)\n```/.exec(styleFirst)?.[1] ?? "";
+	assert.ok(/<style/.test(doc) && /class="xzs"/.test(doc), "样式与结构必须同框,分家了样式就管不到结构");
+	assert.ok(doc.includes("$1"), "捕获组占位符原样保留,展开仍归 applyCardSkin");
+
+	// 2_1.png / v5.2_1.png 形态:div 在前、style 在后(实测 6 条里 4 条是这个顺序)
+	const styleLast = displayRules([
+		{ ...pageScopedScript, replaceString: '<div class="mvu">$1</div>\n<style>.mvu{color:red}</style>' },
+	])[0].replace;
+	const doc2 = /```html\n([\s\S]*?)\n```/.exec(styleLast)?.[1] ?? "";
+	assert.ok(/class="mvu"/.test(doc2) && /<style/.test(doc2), "顺序颠倒也整段包进同一份文档——顺序不是判据");
+});
+
+test("页面级: 连续顶层节点整段包一份;<script> 剔掉不进框(不靠一次 CSS 修复给预设 JS 发权限)", () => {
+	// 双人成行 CoT-简约美化-YO 形态:style → 注释 → details → script 四节点
+	const rule = displayRules([
+		{
+			...pageScopedScript,
+			replaceString:
+				'<style>.c{color:#000}</style>\n<!-- MODULE: HTML_CARD -->\n<details class="c">$1</details>\n<script>window.parent.document</script>',
+		},
+	])[0];
+	assert.equal(rule.replace.match(/```html/g)?.length, 1, "四个节点包成一份文档,不是四个 iframe");
+	const doc = /```html\n([\s\S]*?)\n```/.exec(rule.replace)?.[1] ?? "";
+	assert.ok(/<style/.test(doc), "样式在内");
+	assert.ok(/<details/.test(doc), "注释没把段截断,details 也在内");
+	// HtmlFrame 在 seamless+有脚本时给的 sandbox 含 allow-same-origin(可读父页 DOM)。
+	// 这些脚本今天也不执行(被 unwrap 成裸文本),不该因为修 CSS 就获得页面级权限。
+	assert.ok(!/<script/i.test(doc), "<script> 不进合成文档");
+	assert.ok(!doc.includes("window.parent"), "脚本正文也不留(否则又是裸 JS 上屏)");
+	assert.equal(htmlLooksInteractive(doc), false, "合成的帧必须是静态的——这是 sandbox 不带 same-origin 的前提");
+});
+
+test("页面级: 带内联 on*= 事件的部件不接,原样留给老路径(宁可维持现状,不悄悄发权限)", () => {
+	const withHandler = '<style>.c{color:red}</style>\n<div class="c" onclick="alert(1)">$1</div>';
+	assert.equal(displayRules([{ ...pageScopedScript, replaceString: withHandler }])[0].replace, withHandler);
+});
+
+test("页面级: 认形态不认名字——内联 style= / 已围栏 / 裸整份文档 / 嵌套 style 一律不动", () => {
+	const same = (replaceString: string, why: string) => {
+		assert.equal(displayRules([{ ...pageScopedScript, replaceString }])[0].replace, replaceString, why);
+	};
+	same('<div style="color:red">$1</div>', "内联 style= 属性不是 <style> 元素(15 条内联规则走老路)");
+	same("```html\n<!DOCTYPE html>\n<html><body><style>.a{}</style><div>$1</div></body></html>\n```", "已围栏:现成通道已认领");
+	same("<!DOCTYPE html><html><body><style>.a{}</style>$1</body></html>", "裸整份文档:同上");
+	same('<div class="wrap"><style>.a{}</style>$1</div>', "style 嵌在 div 内部＝不是顶层,是它自己的事");
+	same("『$1』", "纯文本替换");
+	same("<div>$1", "未闭合不成元素,宁缺毋错");
+});
+
+test("页面级: 只在显示侧成立——promptRules 不许把围栏文档塞进送模历史", () => {
+	const pr = promptRules([{ ...pageScopedScript, markdownOnly: false, promptOnly: true }]);
+	assert.equal(pr.length, 1);
+	assert.ok(!pr[0].replace.includes("```"), "送模历史里出现围栏整份文档＝把界面喂给模型当范文");
+	assert.equal(pr[0].replace, pageScopedScript.replaceString, "送模侧逐字不改");
 });
 
 test("buildCardFrontSnapshot: hello/REST 同源载荷", () => {

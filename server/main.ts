@@ -102,6 +102,7 @@ import {
 	assistantMediaOfToolResult,
 	isBackstageText,
 	parseCardFromSessionHead,
+	skinAtDepth,
 	summarizeToolResult,
 	toAssistantHistory,
 	toWireHistory,
@@ -957,7 +958,9 @@ const bindSession = async () => {
 				break;
 			}
 			case "message_end": {
-				const wire = toWireMsg(event.message, names, { skin: currentDisplaySkin() });
+				// 刚生成的这条就是最新消息（depth 0）——作者的深度限定按此筛，
+				// 否则「N 楼外删掉」这类规则会当场把本拍的状态栏删了
+				const wire = toWireMsg(event.message, names, { skin: skinAtDepth(currentDisplaySkin(), 0) });
 				// user 消息在 prompt 受理时已回显，这里跳过防重
 				if (wire && wire.channel !== "user") {
 					broadcast({ type: "message", message: wire });

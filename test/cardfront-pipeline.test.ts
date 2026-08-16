@@ -46,6 +46,47 @@ const sampleRaw = {
 
 const macros = { charName: "青梧", userName: "旅人" };
 
+test("pipeline: 页面级 CSS 端到端——不再被 unwrap 剥成裸 CSS 上屏,整块进 iframe", () => {
+	// 修仙世界模拟器 [美化]状态栏 实卡形态：顶层 <style> + 自己的容器,无 doctype 无围栏。
+	// 改动前实测：<style> 被 unwrap 剥掉 → 737 字 CSS 当正文上屏,容器 div 一起没了,只剩裸数值。
+	const raw = {
+		data: {
+			name: "修真",
+			extensions: {
+				regex_scripts: [
+					{
+						scriptName: "[美化]状态栏",
+						findRegex: "/<StatusBar>\\s*\\n([\\s\\S]*?)<\\/StatusBar>/gi",
+						replaceString:
+							'<style>\n.xzs{background:#eef}\n.xzs-b{white-space:pre-line}\n</style>\n<div class="xzs"><div class="xzs-b">$1</div></div>',
+						placement: [2],
+						disabled: false,
+						markdownOnly: true,
+						promptOnly: false,
+					},
+				],
+			},
+		},
+	};
+	const rules = displayRules(extractRegexScripts(raw));
+	const skin = { rules, charName: "云澜", userName: "旅人" };
+	const body = "他掐诀入定，识海翻涌。\n\n<StatusBar>\n境界：炼气三层\n灵石：320\n</StatusBar>";
+
+	const displayed = prepareDisplayText(body, skin);
+	const parts = splitRichContentParts(displayed, skin);
+	const htmlParts = parts.filter((p) => p.kind === "html") as Array<{ kind: "html"; html: string }>;
+
+	assert.equal(htmlParts.length, 1, "状态栏整块进一个帧");
+	assert.ok(/<style/i.test(htmlParts[0].html), "<style> 必须进框——被剥掉就是 CSS 当正文上屏");
+	assert.ok(/class="xzs"/.test(htmlParts[0].html), "容器结构也在框里(原来连 div 一起被剥)");
+	assert.ok(htmlParts[0].html.includes("炼气三层"), "状态栏数值在框里");
+
+	const textParts = parts.filter((p) => p.kind === "text") as Array<{ kind: "text"; text: string }>;
+	const outside = textParts.map((p) => p.text).join("\n");
+	assert.ok(outside.includes("他掐诀入定"), "叙事留在框外,照常走正文渲染");
+	assert.ok(!outside.includes(".xzs{"), "CSS 不得留在正文里");
+});
+
 test("pipeline: 提取→应用→混排切分→无痕 srcdoc", () => {
 	const rules = displayRules(extractRegexScripts(sampleRaw));
 	assert.equal(rules.length, 2);

@@ -99,6 +99,49 @@ test("rebuildHistory：送模侧作者正则（promptOnly/破坏性）剥「作�
 	assert.ok(ctrl[ctrl.length - 1].text.includes("SexualScene") || ctrl[ctrl.length - 1].text.includes("内容"), "无规则时不剥");
 });
 
+test("rebuildHistory：送模侧深度限定——旧状态栏剥掉，最新那条留着当模型的格式模仿源", () => {
+	// Living With Slaves 实卡形态：`隐藏历史多状态栏`（minDepth:3 起、replace 空）
+	// 与 `折叠通用多状态栏`（maxDepth:2）是按深度互补的一对。忽略 depth 全深度跑，
+	// 历史里一个范例都不剩，模型每拍得从散文重推格式。
+	const hideOld: DisplayRule[] = [
+		{ name: "隐藏历史多状态栏", source: "<state1>[\\s\\S]*?<\\/state1>", flags: "g", replace: "", minDepth: 3 },
+	];
+	const branch: BranchEntryLike[] = [
+		asstE("老段。\n<state1>老栏</state1>"),
+		userE("u1"),
+		asstE("新段。\n<state1>新栏</state1>"),
+		userE("u2"),
+	];
+	// 合并后 4 条：老段 depth3 / u1 depth2 / 新段 depth1 / u2 depth0
+	const { history } = rebuildHistory(branch, hideOld);
+	assert.ok(!history[0].text.includes("老栏"), "depth≥3 的旧状态栏剥掉（省上下文）");
+	assert.ok(history[0].text.includes("老段"), "只剥状态栏，正文不动");
+	assert.ok(history[2].text.includes("新栏"), "最新那条留着——模型的格式模仿源");
+
+	// 对照：忽略 depth 全深度跑（改动前的行为）＝连最新的也删光
+	const noDepth = hideOld.map(({ minDepth: _drop, ...r }) => r);
+	const { history: flat } = rebuildHistory(branch, noDepth);
+	assert.ok(!flat[2].text.includes("新栏"), "对照组确实会把最新的也删光");
+});
+
+test("rebuildHistory：深度按合并后的历史条目数，一拍多条 message 只算一条", () => {
+	// 一拍在梨园是多条 assistant message（多轮工具＋多段正文），在酒馆眼里是一条消息。
+	// 按原始条目数算，本拍第一段就落到 depth 3，作者的 minDepth:2 会把本拍状态栏删掉。
+	const hide: DisplayRule[] = [
+		{ name: "隐藏历史", source: "<state1>[\\s\\S]*?<\\/state1>", flags: "g", replace: "", minDepth: 2 },
+	];
+	const branch: BranchEntryLike[] = [
+		userE("u1"),
+		asstE("第一段。\n<state1>本拍栏</state1>"),
+		asstE("第二段。"),
+		asstE("第三段。"),
+		asstE("第四段。"),
+	];
+	const { history } = rebuildHistory(branch, hide);
+	assert.equal(history.length, 2, "四条 assistant 合成一条历史");
+	assert.ok(history[1].text.includes("本拍栏"), "本拍整体 depth 0，状态栏必须留着");
+});
+
 test("rebuildHistory：幕后轮的回复不作语言检测源；rp-import 记为 user 侧", () => {
 	const branch: BranchEntryLike[] = [
 		{ type: "custom_message", customType: "rp-import", content: "【前情提要】旧事一段。" },

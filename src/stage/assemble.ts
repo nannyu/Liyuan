@@ -18,6 +18,7 @@ import { cleanAssistantText } from "../postprocess.ts";
 import { formatState, defaultState } from "../state.ts";
 import { isBackstageText } from "../stance.ts";
 import type { DisplayRule } from "../cardfront.ts";
+import { hasDepthLimits, rulesAtDepth } from "../cardfront.ts";
 import type { CharacterCard, LorebookEntry, MacroContext, RpConfig, WorldState } from "../types.ts";
 
 // ---------------- 分支 → 历史 ----------------
@@ -128,6 +129,12 @@ export function activeSummary(branch: BranchEntryLike[]): { summary: string; cut
  * 挂在**策略引擎之前**跑——cleanAssistantText 的 unwrap 会先拆掉 <w2g> 等标签，
  * 正则必须先于它应用（与显示层「禁止 unwrap 先于作者正则」同一条纪律）。
  *
+ * 规则带 minDepth/maxDepth 时按深度筛（酒馆 depth：从最新往回数，0＝最新）。
+ * **计数单位是合并后的历史条目**，不是分支上的原始 message：一拍在梨园是十几条
+ * message（多轮工具＋多段正文），在酒馆眼里是一条消息；按原始条目数就会让一拍吃掉
+ * 十几个 depth，作者写的 maxDepth:2 会连最新那条都落空。深度取自**正则之前**的
+ * 分组（同酒馆按 coreChat 下标算），否则「规则清空了某条 → 条目数变了 → 深度变了」自我循环。
+ *
  * M4：有 rp-summary 时，被覆盖的早期条目整段不进历史，改由 summary 字段回读为【前情提要】。
  */
 export function rebuildHistory(branch: BranchEntryLike[], promptRules: DisplayRule[] = []): RebuiltHistory {
@@ -159,15 +166,33 @@ export function rebuildHistory(branch: BranchEntryLike[], promptRules: DisplayRu
 	// 2) 套补丁（rp-draft-op 出流；assistant 文本被定点替换）
 	const { messages: patched } = applyDraftOps(stream);
 
+	// 2.5) 深度归属：按角色游程分组（＝第 3 步的相邻合并），组数即酒馆眼里的消息数
+	const roleOf = (m: DraftMsgLike): "user" | "assistant" =>
+		(m as { _role?: "user" | "assistant" })._role ?? (m.role === "user" ? "user" : "assistant");
+	const needDepth = hasDepthLimits(promptRules);
+	const groupOf: number[] = [];
+	let groups = 0;
+	if (needDepth) {
+		let prevRole: "user" | "assistant" | null = null;
+		for (const m of patched) {
+			const role = roleOf(m);
+			if (role !== prevRole) groups++;
+			prevRole = role;
+			groupOf.push(groups - 1);
+		}
+	}
+
 	// 3) 转历史：清洗 + 空文过滤 + 相邻同角色合并
 	const history: BeatMsg[] = [];
-	for (const m of patched) {
-		const role = (m as { _role?: "user" | "assistant" })._role ?? (m.role === "user" ? "user" : "assistant");
+	for (let i = 0; i < patched.length; i++) {
+		const m = patched[i];
+		const role = roleOf(m);
 		let text = textOf(m.content);
 		// 送模侧作者正则（promptOnly/破坏性）剥「作者不想让模型看」的块——必须在策略引擎
 		// **之前**跑：cleanAssistantText 的 unwrap 会先拆掉 <w2g> 等标签，晚了正则打空
 		// （与显示层「禁止 unwrap 先于作者正则」同一条纪律）。
-		if (promptRules.length > 0) text = applyCardSkin(text, promptRules, { charName: "", userName: "" });
+		const rules = needDepth ? rulesAtDepth(promptRules, groups - 1 - groupOf[i]) : promptRules;
+		if (rules.length > 0) text = applyCardSkin(text, rules, { charName: "", userName: "" });
 		if (role === "assistant") text = cleanAssistantText(text);
 		text = text.trim();
 		if (!text) continue;

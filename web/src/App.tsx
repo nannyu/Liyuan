@@ -83,6 +83,7 @@ import {
 	type TurnSegment,
 } from "./timeline.ts";
 import type { DisplayRule } from "../../src/cardfront.ts";
+import { skinAtDepth } from "../../src/postprocess.ts";
 import { PanelDock } from "./components/PanelDock.tsx";
 import { PersonaPanel } from "./components/PersonaPanel.tsx";
 import { PowersPanel } from "./components/PowersPanel.tsx";
@@ -567,6 +568,8 @@ export default function App() {
 
 	/** 一档卡皮肤：显示向规则（启用且有规则时注入对话流） */
 	const [cardSkin, setCardSkin] = useState<SkinProp | null>(null);
+	/** 生成中的这条就是最新消息（depth 0）：作者「N 楼外删掉」类规则不该落在它头上 */
+	const liveSkin = useMemo(() => skinAtDepth(cardSkin, 0), [cardSkin]);
 	const refreshCardFront = useCallback(async () => {
 		try {
 			// 显式清缓存 + bypass:换卡/hello 后绝对不能吃上一张卡的 rules
@@ -2033,7 +2036,7 @@ export default function App() {
 										<span className="msg-live-tag">生成中</span>
 									</div>
 									{liveSegs.length > 0 ? (
-										<TurnTimeline segments={liveSegs} skin={cardSkin} live />
+										<TurnTimeline segments={liveSegs} skin={liveSkin} live />
 									) : (
 										<div className="info-line pulse" style={{ margin: "0.4rem 0 0" }}>
 											{thinkingLive ? `${charName} 正在思考…` : `${charName} 工作中…`}
