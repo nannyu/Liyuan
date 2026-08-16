@@ -198,15 +198,18 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		setLoadingDetail(true);
 		setLoadError(null);
 		try {
-			// full=1：一次拉齐正文，方便编辑；默认磁盘已保存版
-			const r = await apiGet<FullPresetResponse>("/api/preset?full=1");
+			// full=1：一次拉齐正文，方便编辑
+			// working=1：读**运行时生效版**（草稿 override 优先）。读磁盘版会让已生效的勾选在面板里
+			// 弹回原状，用户以为没生效、再点一次反而是空操作（补丁与运行时同值），只有点保存才看得见——
+			// 面板显示的必须是此刻真正送给模型的那一份。dirty 由服务端按 override 是否存在给出。
+			const r = await apiGet<FullPresetResponse>("/api/preset?full=1&working=1");
 			setMissing(r.missing);
 			if (r.preset) {
 				setDraft(toDraft(r.preset));
-				setDirty(false);
+				setDirty(r.dirty === true);
 			} else {
 				setDraft(null);
-				setDirty(false);
+				setDirty(r.dirty === true);
 			}
 		} catch (e) {
 			setLoadError(e instanceof Error ? e.message : String(e));
@@ -317,11 +320,13 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	/** 页签：参数 | 提示词（装配进提示词的全部块） */
 	const [tab, setTab] = useState<"samplers" | "prompt">("samplers");
 
-	/** 酒馆内置槽位（Chat History / Char Description…）单列——它们没有正文，只声明位置 */
+	/**
+	 * 只列有正文的块。酒馆内置槽位（Chat History / Char Description / World Info…）不进前端：
+	 * 它们没有正文、只声明「角色卡/世界书/历史插在哪一段」，露在这里只会让人以为有什么要配。
+	 * 数据侧一字不动——原文里的 `prompt_order` 仍带着它们，装配照原序认领。
+	 */
 	const blocksByKind = useMemo(() => {
-		const map = { blocks: [] as DraftBlock[], markers: [] as DraftBlock[] };
-		for (const b of draft?.blocks ?? []) (b.marker ? map.markers : map.blocks).push(b);
-		return map;
+		return { blocks: (draft?.blocks ?? []).filter((b) => !b.marker) };
 	}, [draft]);
 
 	const selectPreset = (file: string | null) =>
@@ -538,7 +543,6 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 							{tab === "prompt" &&
 								(() => {
 									const blocks = blocksByKind.blocks;
-									const markers = blocksByKind.markers;
 									const onChars = blocks.reduce((n, b) => n + (b.enabled ? b.content.length : 0), 0);
 									const allOn = blocks.length > 0 && blocks.every((b) => b.enabled);
 									return (
@@ -563,31 +567,6 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 													onDelete={() => removeBlock(b.id)}
 												/>
 											))}
-											{markers.length > 0 && (
-												<>
-													<div className="preset-chan-head" style={{ marginTop: 12 }}>
-														<span className="lore-meta">
-															<b>酒馆内置槽位</b> — 决定角色卡 / 世界书 / 对话历史插在哪一段，本身没有正文
-														</span>
-													</div>
-													{markers.map((b) => (
-														<div key={b.id} className="kv">
-															<span className="kv-k" style={{ opacity: b.enabled ? 1 : 0.5 }}>
-																{b.enabled ? "●" : "○"} {b.name || b.id}
-															</span>
-															<span className="kv-v">
-																{CHANNEL_LABEL[b.channel] ?? b.channel}
-																<Toggle
-																	checked={b.enabled}
-																	disabled={busy}
-																	onChange={(v) => patchBlock(b.id, { enabled: v })}
-																	
-																/>
-															</span>
-														</div>
-													))}
-												</>
-											)}
 										</section>
 									);
 								})()}

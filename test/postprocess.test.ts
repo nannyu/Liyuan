@@ -232,3 +232,24 @@ test("prepareDisplayText: 开场前缀+占位符经皮肤成围栏文档", () =>
 	assert.ok(out.includes("性别"));
 	assert.ok(out.includes("【开场"));
 });
+
+test("prepareDisplayText: 裸整份文档带【开场】前缀——原样交出，<style> 不被 unwrap 剥掉", () => {
+	// v1.4.1 实锤（用户反馈截图）：卡的开场白是一份裸 <html> 文档（无 doctype、无围栏），
+	// 梨园自己加的「【开场 · 卡名】\n」前缀把「裸整页」判据顶掉（它要求文档落在第 0 位），
+	// 于是整页被判成普通正文 → <style> 壳被剥、CSS 当正文上屏、容器标签也被剥。
+	const doc = '<html>\n<style>\n.gj-wrap{color:#fff}\n</style>\n<div class="gj-wrap">图鉴</div>\n</html>';
+	const out = prepareDisplayText(`【开场 · 某卡】\n${doc}`, null);
+	assert.ok(out.includes("<style>"), "<style> 标签必须留着（被剥就会变成 CSS 裸奔上屏）");
+	assert.ok(out.includes('class="gj-wrap"'), "容器标签留着");
+	assert.ok(out.includes("【开场 · 某卡】"), "前缀本身仍在");
+});
+
+test("prepareDisplayText: 裸整份文档 + 文档外的过滤照常执行", () => {
+	// 整页保护是「把文档整段占位、过滤完再还原」，不是「整条消息跳过过滤」：
+	// 文档之外的 thinking 之类仍须被滤掉，否则一张带整页开场白的卡会连思考块一起上屏。
+	const doc = "<!doctype html>\n<html><body><p>页</p></body></html>";
+	const out = prepareDisplayText(`【开场 · 某卡】\n${doc}\n\n<thinking>内部盘算</thinking>\n收尾。`, null);
+	assert.ok(out.includes("<p>页</p>"), "文档内容完好");
+	assert.ok(!out.includes("内部盘算"), "文档之外的 thinking 仍被滤掉");
+	assert.ok(out.includes("收尾。"), "文档之外的正文保留");
+});

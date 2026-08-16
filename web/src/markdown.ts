@@ -15,6 +15,7 @@ export type MdPart =
 	| { kind: "text"; text: string }
 	| { kind: "code"; lang: string; code: string }
 	| { kind: "table"; header: string[]; rows: string[][] }
+	| { kind: "blockquote"; lines: string[] }
 	| { kind: "options"; items: { key: string; text: string }[] };
 
 /** 管道行 → 单元格（去首尾空管道；不处理转义 \| ——预设表格不用它） */
@@ -39,7 +40,11 @@ const OPTION_LINE_RE = /^\s*([A-Z])[.、．]\s*(\S.*)$/;
 
 type LineRun =
 	| { kind: "table"; start: number; end: number; header: string[]; rows: string[][] }
+	| { kind: "blockquote"; start: number; end: number; lines: string[] }
 	| { kind: "options"; start: number; end: number; items: { key: string; text: string }[] };
+
+/** 行首 `>`（允许缩进与紧跟一个空格）——markdown 引用块 */
+const QUOTE_LINE_RE = /^[ \t]{0,3}>[ \t]?/;
 
 /** 在行数组里找下一个表格/选项块（从 from 行起）；找不到返回 null */
 function findNextRun(lines: string[], from: number): LineRun | null {
@@ -87,6 +92,17 @@ function findNextRun(lines: string[], from: number): LineRun | null {
 				return { kind: "options", start: i, end: j, items };
 			}
 		}
+		// 引用块：连续的行首 `>`（放在表格/选项之后判，两者的既有行为逐字不变）。
+		// 作者用它写「导演附录」这类旁注；不支持时 `>` 会当字面文本上屏、每行还各成一段（酒馆是一个引用框）。
+		if (QUOTE_LINE_RE.test(lines[i])) {
+			const quoted: string[] = [];
+			let j = i;
+			while (j < lines.length && QUOTE_LINE_RE.test(lines[j])) {
+				quoted.push(lines[j].replace(QUOTE_LINE_RE, ""));
+				j++;
+			}
+			return { kind: "blockquote", start: i, end: j, lines: quoted };
+		}
 	}
 	return null;
 }
@@ -106,6 +122,8 @@ export function splitTextRuns(text: string): MdPart[] {
 		}
 		if (run.kind === "table") {
 			out.push({ kind: "table", header: run.header, rows: run.rows });
+		} else if (run.kind === "blockquote") {
+			out.push({ kind: "blockquote", lines: run.lines });
 		} else {
 			out.push({ kind: "options", items: run.items });
 		}

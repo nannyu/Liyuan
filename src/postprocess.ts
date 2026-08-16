@@ -327,6 +327,11 @@ function isFullPageHtmlPayload(text: string): boolean {
 	// 裸整页
 	const head = t.slice(0, 80).toLowerCase();
 	if (head.startsWith("<!doctype html") || head.startsWith("<html")) return true;
+	// 裸整页 + 短前言：上面三条围栏判据都写着 `(?:^|\n)` 明确容忍前缀，裸整页这条却要求
+	// 文档落在第 0 位——而**梨园自己**给开场白加了「【开场 · 卡名】\n」（greeting.ts:16）。
+	// 于是「裸整份文档」的开场白被判成不是整页，走通用 unwrap：`<style>` 壳被剥、CSS 当正文
+	// 上屏、容器标签也被剥。同一份原文去掉前缀或补上围栏都正常，实证只差这个前缀。
+	if (/(?:^|\n)[ \t]*(?:<!doctype\s+html|<html[\s>])/i.test(text) && /<\/html\s*>/i.test(text)) return true;
 	return false;
 }
 
@@ -447,6 +452,14 @@ function protectFullPageBlocks(text: string): { text: string; stash: string[] } 
 	});
 	// 裸整页段（无围栏）：<!doctype …</html>
 	out = out.replace(/<!doctype\s+html[\s\S]*?<\/html\s*>/gi, (m) => {
+		const token = skinDivToken(stash.length);
+		stash.push(m);
+		return token;
+	});
+	// 裸整页段：直接 `<html>` 开头、没写 doctype（社区卡很常见，本仓库实测的那张开场白就是）。
+	// 上一条只认 doctype 打头，这种整份文档过不了保护、被标签策略撕碎。
+	// 顺序在后：doctype 打头的那种已被上一条换成占位符，不会重复命中。
+	out = out.replace(/<html[\s>][\s\S]*?<\/html\s*>/gi, (m) => {
 		const token = skinDivToken(stash.length);
 		stash.push(m);
 		return token;

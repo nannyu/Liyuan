@@ -44,8 +44,34 @@ export function looksLikeProgramApp(html: string, scripts: boolean): boolean {
 	return false;
 }
 
-const LEGACY_BASE_CSS =
-	`html,body{margin:0;padding:0;background:transparent;color:#3f3f3f;` +
+/**
+ * 把作者样式里的视口高度单位按**真窗口高**折成 px。
+ *
+ * 为什么必须折：静态无痕帧的高度是按内容量出来的，而 `76vh` 之类的内容高度又取决于帧有多高——
+ * 两者互为因果。帧从 minHeight=120 起步，`76vh` 只有 91px，量出来自然矮，`fit` 三趟停在 244px
+ * （真浏览器实测；再迭代十趟也只爬到 336，不动点本身就不对），屏上是内容被裁 + 内外两条滚动条
+ * （v1.4.1 用户反馈的图鉴卡实锤）。
+ *
+ * 为什么这不算改作者样式：作者是照酒馆写的，酒馆里 `vh` 就是**浏览器视口**。iframe 自动量高时
+ * 没有一个有意义的"视口"，折成真窗口高的 px 才是对作者本意的忠实翻译。实测同一张卡：折算后帧高
+ * 538px、内层 `pages` 高度等于内容高度（**无内层滚动条、无死白**）；不折则 409/457 被压掉 48px。
+ *
+ * 只在 `<style>` 块与 `style="…"` 属性内替换：正文文字里出现"76vh"这种字样不受影响。
+ * 只对静态无痕帧做：视口接管型帧（TAKEOVER）本身按视口锁高，vh 已有确定含义，碰它就是越权。
+ */
+export function resolveViewportUnits(html: string, viewportPx: number): string {
+	if (!html || !(viewportPx > 0)) return html;
+	const px = (n: number) => `${Math.round((viewportPx * n) / 100)}px`;
+	const sub = (css: string) => css.replace(/(\d+(?:\.\d+)?)[dsl]?vh\b/gi, (_m, n: string) => px(Number.parseFloat(n)));
+	let out = html.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi, (_m, open: string, body: string, close: string) =>
+		`${open}${sub(body)}${close}`,
+	);
+	out = out.replace(/\bstyle\s*=\s*"([^"]*)"/gi, (m, body: string) => (/[dsl]?vh\b/i.test(body) ? `style="${sub(body)}"` : m));
+	out = out.replace(/\bstyle\s*=\s*'([^']*)'/gi, (m, body: string) => (/[dsl]?vh\b/i.test(body) ? `style='${sub(body)}'` : m));
+	return out;
+}
+
+const LEGACY_BASE_CSS = `html,body{margin:0;padding:0;background:transparent;color:#3f3f3f;` +
 	`font:13.5px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans SC","Segoe UI",sans-serif}` +
 	`img,video{max-width:100%;height:auto}` +
 	`* {box-sizing:border-box}`;
@@ -279,9 +305,12 @@ export function escapeScriptEndTags(html: string): string {
 	return out;
 }
 
-export function buildSrcDoc(html: string, scripts: boolean, seamless: boolean): string {
+export function buildSrcDoc(html: string, scripts: boolean, seamless: boolean, viewportPx?: number): string {
 	// 先修用户 HTML 内脚本截断，再注入带真实 </script> 的垫片
-	const trimmed = escapeScriptEndTags(html.trim());
+	const raw = escapeScriptEndTags(html.trim());
+	// 静态无痕帧：作者样式里的 vh 折成真窗口高的 px。帧高按内容量，而 vh 的内容高又取决于帧高，
+	// 不折就互为因果、量不出正确高度（见 resolveViewportUnits）。脚本帧走上报器、接管帧锁视口，都不折。
+	const trimmed = seamless && !scripts && viewportPx ? resolveViewportUnits(raw, viewportPx) : raw;
 	const isFull = /^\s*<(!doctype|html[\s>])/i.test(trimmed);
 	// 与 HtmlFrame 的高度策略同源：同一函数、同一入参，保证 CSS 注入与定高策略永不打架
 	const takeover = seamless && looksLikeProgramApp(html, scripts);

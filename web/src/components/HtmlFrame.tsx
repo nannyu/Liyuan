@@ -40,7 +40,7 @@ export function HtmlFrame({
 		programApp && typeof window !== "undefined" ? programViewportHeight(window) : minHeight,
 	);
 	const [showSource, setShowSource] = useState(false);
-	const srcDoc = buildSrcDoc(html, scripts, seamless);
+	const srcDoc = buildSrcDoc(html, scripts, seamless, typeof window !== "undefined" ? window.innerHeight : undefined);
 	/**
 	 * 沙箱矩阵：
 	 * - 静态 seamless：only same-origin（量高，无脚本）

@@ -992,6 +992,17 @@ html[data-theme="dark"] [data-tip]:focus-visible::after {
 }
 
 /* markdown 围栏代码块：Options 等与正文区分（对齐酒馆浅底代码块） */
+/* 引用块（markdown `>`）：作者用它写旁注/导演附录。与代码块同一套调色，但保留正文字体 */
+.msg-md-quote {
+	margin: 0.65em 0 0.85em;
+	padding: 10px 14px 10px 16px;
+	border-radius: 12px;
+	border: 1px solid var(--hairline, rgba(0, 0, 0, 0.06));
+	border-left: 3px solid color-mix(in srgb, var(--accent, #bc4123) 45%, transparent);
+	background: color-mix(in srgb, var(--accent, #bc4123) 4%, var(--surface-dim, #f0eeeb));
+	color: color-mix(in srgb, var(--text, #2c2825) 88%, transparent);
+}
+
 .msg-md-code {
 	margin: 0.65em 0 0.85em;
 	padding: 10px 14px;

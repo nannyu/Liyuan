@@ -183,6 +183,18 @@ export function Paragraphs({ text }: { text: string }) {
 						</div>
 					);
 				}
+				if (p.kind === "blockquote") {
+					return (
+						<blockquote key={i} className="msg-md-quote">
+							{p.lines.map((line, j, arr) => (
+								<span key={j}>
+									{renderRp(line)}
+									{j < arr.length - 1 && <br />}
+								</span>
+							))}
+						</blockquote>
+					);
+				}
 				if (p.kind === "options") {
 					return (
 						<ul key={i} className="msg-options">

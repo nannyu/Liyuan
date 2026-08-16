@@ -267,6 +267,8 @@ const textOfAssistant = (m: AssistantMsgLike | null): string => {
 export const PLAN_CARD =
 	"【第 1 步·规划】本拍还没有计划。读题、探索（工具自取）；用户这句输入引出的未定变量——" +
 	"取不同值这拍走向会分岔、且设定里查不到的——先 `ask` 请用户定，再用 `beat_plan` 列路标。" +
+	"你的任务是列出抽象的路标的同时为路标的具体内容留下充分的可发挥余地，" +
+	"让下面每个剧情轮次扮演路标时拥有极大的发挥空间以给用户带来更多的剧情可能性。" +
 	"没有戏的拍可 `draft_write` 一次交完；用户本轮在求方向/递笔的，直接 `ask`。";
 
 /** 记账注入：seal（含兜底封笔）之后第一件事；本拍已有落账（结构信号）时跳过 */
@@ -840,7 +842,6 @@ export class StageEngine {
 		_blog("merge_input_draft", ws.draft);
 		_blog("merge_input_tail", loopTail);
 		_blog("merge_output", finalText);
-		sm.appendCustomEntry("rp-text-debug", { beatLog, draft: ws.draft, loopTail, finalText });
 
 		// 落树：正文以定稿为准（保留思考块，剥离工具调用轨迹）；纯错误/空拍不落
 		let entryId: string | undefined;
@@ -862,6 +863,13 @@ export class StageEngine {
 			});
 			sm.flush();
 		}
+
+		// 留档条目必须落在正文**之后**：append 会把叶移到自己身上（_appendEntry），
+		// 落在正文之前就把正文垫成它的子节点、不再是 user 的直接子节点，而 swipe 变体
+		// （listReplyVariants 只认 user 的直接子节点）随之一个都认不出来——v1.4.1 起
+		// reroll 恒显 1/1、旧变体在树上却不可达。空拍（无 final/finalText）照样留档。
+		sm.appendCustomEntry("rp-text-debug", { beatLog, draft: ws.draft, loopTail, finalText });
+		sm.flush();
 
 		// 媒体交付落树（8/06 重接）：wire 只认树上的 toolResult 出 image/audio/video/html 帧。
 		// 落在正文**之后**——屏上顺序与演出顺序一致（先看正文，再看图）。

@@ -9,6 +9,7 @@ import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from "@liy
 import { registerFauxProvider, streamSimple } from "@liyuan/ai/compat";
 
 import { StageEngine, type StageStreamFn } from "../src/stage/engine.ts";
+import { listReplyVariants } from "../src/swipe.ts";
 
 /** 临时舞台：配置+卡+独立会话目录 */
 const makeStage = () => {
@@ -125,6 +126,31 @@ test("引擎：regenerate 在钉回的 user 下挂 sibling（swipe 语义）", a
 		const branchText = JSON.stringify(sm.getBranch());
 		assert.ok(branchText.includes("重演的第二版"), "当前分支是重演稿");
 		assert.ok(!branchText.includes("第一版回复"), "旧变体不在当前分支");
+
+		// sibling 关系必须真的成立：swipe 变体只认 user 的**直接**子节点，留档等 custom
+		// 条目一旦垫在中间就一个都认不出来（v1.4.1 起 reroll 恒显 1/1、旧变体不可达）。
+		const entries = sm.getEntries() as Array<{
+			id: string;
+			parentId: string | null;
+			type: string;
+			message?: { role?: string; customType?: string };
+		}>;
+		const replies = entries.filter((e) => e.type === "message" && e.message?.role === "assistant");
+		assert.equal(replies.length, 2, "两版回复都在树上");
+		for (const r of replies) assert.equal(r.parentId, userId, "每版回复都挂在 user 上（sibling）");
+		const variants = listReplyVariants(
+			entries.map((e) => ({
+				id: e.id,
+				parentId: e.parentId,
+				type: e.type,
+				role: e.message?.role,
+				customType: e.message?.customType,
+			})),
+			userId,
+			sm.getLeafId(),
+		);
+		assert.equal(variants.length, 2, "swipe 认出 2 个变体（UI 上的 2/2）");
+
 	} finally {
 		reg.unregister();
 		rmSync(cwd, { recursive: true, force: true });
