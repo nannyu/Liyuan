@@ -3,7 +3,10 @@
  * - 开关 / 改字 → 立即进运行时（下一轮生效），**不写盘**
  * - 「保存」→ 写入预设文件
  * - 切换预设再切回 → 磁盘已保存版（未保存改动丢弃）
- * - 点条目展开可改名称 / 通道 / 正文
+ * - 点条目展开可改名称 / 正文（通道是 chatHistory 派生的位置，只读）
+ *
+ * 磁盘上存的是**酒馆原文**：这里发的是补丁（开关落 prompt_order、改字落 prompts），
+ * 梨园不认识的键原样留在文件里（见 src/preset-doc.ts）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,7 +16,7 @@ import {
 	apiPost,
 	apiPut,
 	downloadJson,
-	type ConvertReportItem,
+	type PresetBlockPatch,
 	type PresetBlockView,
 	type PresetResponse,
 	type PresetsResponse,
@@ -21,8 +24,8 @@ import {
 import { ConfirmButton, PanelStatus, SliderField, Toggle, useAction, usePanelData } from "./kit.tsx";
 
 const CHANNEL_LABEL: Record<string, string> = {
-	system: "系统区",
-	postHistory: "末端注入",
+	system: "历史前",
+	postHistory: "历史后",
 };
 
 const SAMPLER_META: Array<{ key: string; min: number; max: number; step: number; hint: string }> = [
@@ -62,6 +65,8 @@ function toDraft(p: NonNullable<FullPresetResponse["preset"]>): DraftPreset {
 			channel: b.channel,
 			role: b.role,
 			enabled: b.enabled,
+			marker: b.marker === true,
+			...(typeof b.depth === "number" ? { depth: b.depth } : {}),
 			chars: b.content?.length ?? b.chars,
 			content: b.content ?? "",
 		})),
@@ -71,11 +76,15 @@ function toDraft(p: NonNullable<FullPresetResponse["preset"]>): DraftPreset {
 function PresetBlockEditor({
 	block,
 	busy,
+	note,
 	onChange,
+	onDelete,
 }: {
 	block: DraftBlock;
 	busy: boolean;
+	note?: string;
 	onChange: (patch: Partial<DraftBlock>) => void;
+	onDelete?: () => void;
 }) {
 	const [open, setOpen] = useState(false);
 
@@ -96,6 +105,7 @@ function PresetBlockEditor({
 							{(block.content?.length ?? block.chars).toLocaleString()} 字 ·{" "}
 							{CHANNEL_LABEL[block.channel] ?? block.channel}
 						</span>
+						{note && <span className="lore-meta preset-v2-note">{note}</span>}
 					</div>
 				</button>
 				<div className="preset-block-acts">
@@ -107,6 +117,11 @@ function PresetBlockEditor({
 					>
 						修改
 					</button>
+					{onDelete && (
+						<ConfirmButton className="act preset-del-btn" disabled={busy} confirmText="确认删除" onConfirm={onDelete}>
+							删除
+						</ConfirmButton>
+					)}
 					<Toggle
 						checked={block.enabled}
 						disabled={busy}
@@ -124,17 +139,13 @@ function PresetBlockEditor({
 						onChange={(e) => onChange({ name: e.target.value })}
 					/>
 					<label className="field-label" style={{ marginTop: 8 }}>
-						通道
+						位置
 					</label>
-					<select
-						className="panel-search"
-						value={block.channel}
-						disabled={busy}
-						onChange={(e) => onChange({ channel: e.target.value as DraftBlock["channel"] })}
-					>
-						<option value="system">系统区（进 system prompt）</option>
-						<option value="postHistory">末端注入（每轮导演备注）</option>
-					</select>
+					<div className="field-hint">
+						{CHANNEL_LABEL[block.channel] ?? block.channel}
+						{block.depth !== undefined ? ` · 深度注入 depth=${block.depth}` : ""}
+						——由本块在预设里相对 Chat History 槽位的位置决定，改顺序请在酒馆里改。
+					</div>
 					<label className="field-label" style={{ marginTop: 8 }}>
 						正文
 					</label>
@@ -175,9 +186,10 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	const [missing, setMissing] = useState<string | undefined>();
 	const [loadingDetail, setLoadingDetail] = useState(false);
 	const [loadError, setLoadError] = useState<string | null>(null);
-	const [report, setReport] = useState<ConvertReportItem[] | null>(null);
 	/** 防 apply 风暴：合并短时间多次改动 */
 	const applyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const pendingRef = useRef<PresetBlockPatch[]>([]);
+	const pendingSamplersRef = useRef<Record<string, number> | null>(null);
 	const draftRef = useRef(draft);
 	draftRef.current = draft;
 	const activeFile = files.data?.active ?? null;
@@ -186,15 +198,18 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		setLoadingDetail(true);
 		setLoadError(null);
 		try {
-			// full=1：一次拉齐正文，方便编辑；默认磁盘已保存版
-			const r = await apiGet<FullPresetResponse>("/api/preset?full=1");
+			// full=1：一次拉齐正文，方便编辑
+			// working=1：读**运行时生效版**（草稿 override 优先）。读磁盘版会让已生效的勾选在面板里
+			// 弹回原状，用户以为没生效、再点一次反而是空操作（补丁与运行时同值），只有点保存才看得见——
+			// 面板显示的必须是此刻真正送给模型的那一份。dirty 由服务端按 override 是否存在给出。
+			const r = await apiGet<FullPresetResponse>("/api/preset?full=1&working=1");
 			setMissing(r.missing);
 			if (r.preset) {
 				setDraft(toDraft(r.preset));
-				setDirty(false);
+				setDirty(r.dirty === true);
 			} else {
 				setDraft(null);
-				setDirty(false);
+				setDirty(r.dirty === true);
 			}
 		} catch (e) {
 			setLoadError(e instanceof Error ? e.message : String(e));
@@ -210,26 +225,28 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		void loadFromDisk();
 	}, [activeFile, files.data, loadFromDisk]);
 
+	/**
+	 * 发补丁而不是发全量：磁盘上存的是酒馆原文，开关只动 `prompt_order[].enabled`，
+	 * 改字只动 `prompts[].content`，梨园不认识的键原样留在文件里。
+	 */
 	const applyRuntime = useCallback(
-		(next: DraftPreset) => {
+		(patches: PresetBlockPatch[], samplers?: Record<string, number>) => {
+			pendingRef.current.push(...patches);
+			if (samplers) pendingSamplersRef.current = samplers;
 			if (applyTimer.current) clearTimeout(applyTimer.current);
 			applyTimer.current = setTimeout(() => {
+				// 同一块的多次改动按后写优先合并成一条
+				const merged = new Map<string, PresetBlockPatch>();
+				for (const p of pendingRef.current) merged.set(p.id, { ...merged.get(p.id), ...p });
+				const body: { blocks: PresetBlockPatch[]; samplers?: Record<string, number> } = {
+					blocks: [...merged.values()],
+				};
+				if (pendingSamplersRef.current) body.samplers = pendingSamplersRef.current;
+				pendingRef.current = [];
+				pendingSamplersRef.current = null;
 				void (async () => {
 					try {
-						await apiPut("/api/preset", {
-							preset: {
-								name: next.name,
-								samplers: next.samplers,
-								blocks: next.blocks.map((b) => ({
-									id: b.id,
-									name: b.name,
-									channel: b.channel,
-									role: b.role,
-									enabled: b.enabled,
-									content: b.content,
-								})),
-							},
-						});
+						await apiPut("/api/preset", body);
 					} catch (e) {
 						toast("error", e instanceof Error ? e.message : String(e));
 					}
@@ -239,13 +256,14 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		[toast],
 	);
 
+	/** 本地视图改动 + 同步一条补丁到运行时草稿 */
 	const patchDraft = useCallback(
-		(mutator: (d: DraftPreset) => DraftPreset) => {
+		(mutator: (d: DraftPreset) => DraftPreset, patches: PresetBlockPatch[], samplers?: Record<string, number>) => {
 			setDraft((prev) => {
 				if (!prev) return prev;
 				const next = mutator(prev);
 				setDirty(true);
-				applyRuntime(next);
+				applyRuntime(patches, samplers);
 				return next;
 			});
 		},
@@ -253,15 +271,40 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	);
 
 	const patchBlock = (id: string, patch: Partial<DraftBlock>) => {
-		patchDraft((d) => ({
-			...d,
-			blocks: d.blocks.map((b) => {
-				if (b.id !== id) return b;
-				const merged = { ...b, ...patch };
-				if (typeof patch.content === "string") merged.chars = patch.content.length;
-				return merged;
+		patchDraft(
+			(d) => ({
+				...d,
+				blocks: d.blocks.map((b) => {
+					if (b.id !== id) return b;
+					const merged = { ...b, ...patch };
+					if (typeof patch.content === "string") merged.chars = patch.content.length;
+					return merged;
+				}),
 			}),
-		}));
+			[
+				{
+					id,
+					...(typeof patch.enabled === "boolean" ? { enabled: patch.enabled } : {}),
+					...(typeof patch.name === "string" ? { name: patch.name } : {}),
+					...(typeof patch.content === "string" ? { content: patch.content } : {}),
+				},
+			],
+		);
+	};
+
+	const patchSamplers = (key: string, value: number) => {
+		setDraft((prev) => {
+			if (!prev) return prev;
+			const samplers = { ...prev.samplers, [key]: value };
+			setDirty(true);
+			applyRuntime([], samplers);
+			return { ...prev, samplers };
+		});
+	};
+
+	/** 删块：从预设整块移除（立即进运行时，dirty，保存后写盘）。8/12 用户点名：提示词/状态栏都要能删。 */
+	const removeBlock = (id: string) => {
+		patchDraft((d) => ({ ...d, blocks: d.blocks.filter((b) => b.id !== id) }), [{ id, remove: true }]);
 	};
 
 	const orderedSamplers = useMemo(() => {
@@ -274,17 +317,16 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		return { known, unknown };
 	}, [draft]);
 
-	/** 页签：采样参数 | 系统区 | 末端注入（点按钮切换，不堆叠） */
-	const [tab, setTab] = useState<"samplers" | "system" | "postHistory">("samplers");
+	/** 页签：参数 | 提示词（装配进提示词的全部块） */
+	const [tab, setTab] = useState<"samplers" | "prompt">("samplers");
 
-	const grouped = useMemo(() => {
-		const map = new Map<string, DraftBlock[]>();
-		for (const b of draft?.blocks ?? []) {
-			const list = map.get(b.channel) ?? [];
-			list.push(b);
-			map.set(b.channel, list);
-		}
-		return [...map.entries()];
+	/**
+	 * 只列有正文的块。酒馆内置槽位（Chat History / Char Description / World Info…）不进前端：
+	 * 它们没有正文、只声明「角色卡/世界书/历史插在哪一段」，露在这里只会让人以为有什么要配。
+	 * 数据侧一字不动——原文里的 `prompt_order` 仍带着它们，装配照原序认领。
+	 */
+	const blocksByKind = useMemo(() => {
+		return { blocks: (draft?.blocks ?? []).filter((b) => !b.marker) };
 	}, [draft]);
 
 	const selectPreset = (file: string | null) =>
@@ -300,22 +342,8 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 
 	const saveToDisk = () =>
 		run(async () => {
-			const d = draftRef.current;
-			if (!d) throw new Error("无预设可保存");
-			await apiPost("/api/preset/save", {
-				preset: {
-					name: d.name,
-					samplers: d.samplers,
-					blocks: d.blocks.map((b) => ({
-						id: b.id,
-						name: b.name,
-						channel: b.channel,
-						role: b.role,
-						enabled: b.enabled,
-						content: b.content,
-					})),
-				},
-			});
+			// 草稿已在运行时文件里（原文＋补丁），保存＝把它落到预设文件
+			await apiPost("/api/preset/save", {});
 			setDirty(false);
 			files.reload();
 		}, "预设已保存到文件");
@@ -328,14 +356,12 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 
 	const rename = () => {
 		if (!activeFile || !draft) return;
-		const name = prompt("新名字：", draft.name);
+		const name = prompt("新名字（＝新文件名）：", draft.name);
 		if (!name?.trim()) return;
 		void run(async () => {
 			await apiPost("/api/presets/rename", { file: activeFile, name: name.trim() });
-			// 重命名只改展示名：同步草稿名并 apply+提示保存
-			patchDraft((d) => ({ ...d, name: name.trim() }));
 			files.reload();
-		}, "显示名已改（记得点保存写入文件）");
+		}, "已重命名（预设名就是文件名）");
 	};
 
 	const removeActive = () => {
@@ -351,23 +377,7 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	const doExport = async () => {
 		if (!activeFile) return;
 		try {
-			// 导出当前草稿（含未保存）
-			const d = draftRef.current;
-			if (d) {
-				downloadJson(`${d.name || "preset"}.json`, {
-					name: d.name,
-					samplers: d.samplers,
-					blocks: d.blocks.map(({ id, name, channel, role, enabled, content }) => ({
-						id,
-						name,
-						channel,
-						role,
-						enabled,
-						content,
-					})),
-				});
-				return;
-			}
+			// 导出原文：酒馆能直接吃回去（未保存草稿请先点保存）
 			const r = await apiGet<{ name: string; json: unknown }>(`/api/presets/export?file=${encodeURIComponent(activeFile)}`);
 			downloadJson(`${r.name}.json`, r.json);
 		} catch (e) {
@@ -376,15 +386,16 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	};
 
 	const doImport = async (file: File) => {
-		setReport(null);
 		try {
 			const json = JSON.parse(await file.text()) as Record<string, unknown>;
-			const r = await apiPost<{ report: ConvertReportItem[]; blockCount: number; converted: boolean }>("/api/presets/import", {
+			const r = await apiPost<{ kind: "st" | "rp"; blockCount: number; enabledCount: number }>("/api/presets/import", {
 				name: file.name.replace(/\.json$/i, ""),
 				json,
 			});
-			if (r.converted) setReport(r.report);
-			toast("info", `已导入并启用（${r.blockCount} 个内容块${r.converted ? "，ST 预设已转换" : ""}）`);
+			toast(
+				"info",
+				`已导入并启用（${r.kind === "st" ? "酒馆原文原样存档" : "旧梨园格式"}：${r.blockCount} 条 · 启用 ${r.enabledCount}）`,
+			);
 			setDirty(false);
 			files.reload();
 		} catch (e) {
@@ -394,10 +405,10 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 
 	const toggleChannel = (blocks: DraftBlock[], enabled: boolean) => {
 		const ids = new Set(blocks.map((b) => b.id));
-		patchDraft((d) => ({
-			...d,
-			blocks: d.blocks.map((b) => (ids.has(b.id) ? { ...b, enabled } : b)),
-		}));
+		patchDraft(
+			(d) => ({ ...d, blocks: d.blocks.map((b) => (ids.has(b.id) ? { ...b, enabled } : b)) }),
+			blocks.map((b) => ({ id: b.id, enabled })),
+		);
 	};
 
 	return (
@@ -461,20 +472,6 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 								有未保存修改：已立即用于对话；切换预设会丢弃。点「保存」写入文件。
 							</div>
 						)}
-						{report && (
-							<details className="legacy-group" open>
-								<summary>转换分诊报告（{report.length} 项）</summary>
-								{report.map((r, i) => (
-									<div key={i} className="kv">
-										<span className="kv-k">{r.name || r.identifier}</span>
-										<span className="kv-v">
-											{r.action}
-											{r.contentChars > 0 ? ` · ${r.contentChars} 字` : ""}
-										</span>
-									</div>
-								))}
-							</details>
-						)}
 					</section>
 
 					<PanelStatus loading={loadingDetail} error={loadError} hasData={!!draft || !!missing} />
@@ -490,25 +487,24 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 									className={`preset-tab ${tab === "samplers" ? "active" : ""}`}
 									onClick={() => setTab("samplers")}
 								>
-									采样参数
+									参数
 								</button>
-								{(["system", "postHistory"] as const).map((ch) => {
-									const blocks = grouped.find(([c]) => c === ch)?.[1] ?? [];
+								{(() => {
+									const blocks = blocksByKind.blocks;
 									const on = blocks.filter((b) => b.enabled).length;
 									return (
 										<button
-											key={ch}
 											type="button"
 											role="tab"
-											aria-selected={tab === ch}
-											className={`preset-tab ${tab === ch ? "active" : ""}`}
-											onClick={() => setTab(ch)}
+											aria-selected={tab === "prompt"}
+											className={`preset-tab ${tab === "prompt" ? "active" : ""}`}
+											onClick={() => setTab("prompt")}
 										>
-											{CHANNEL_LABEL[ch]}
+											提示词
 											<span className="preset-tab-count">{on}/{blocks.length}</span>
 										</button>
 									);
-								})}
+								})()}
 							</div>
 
 							{tab === "samplers" && (
@@ -523,12 +519,7 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 										min={m.min}
 										max={m.max}
 										step={m.step}
-										onChange={(nv) =>
-											patchDraft((d) => ({
-												...d,
-												samplers: { ...d.samplers, [m.key]: nv },
-											}))
-										}
+										onChange={(nv) => patchSamplers(m.key, nv)}
 									/>
 								))}
 								{orderedSamplers.unknown.map(({ key, value }) => (
@@ -541,12 +532,7 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 											value={value}
 											onChange={(e) => {
 												const n = Number(e.target.value);
-												if (Number.isFinite(n)) {
-													patchDraft((d) => ({
-														...d,
-														samplers: { ...d.samplers, [key]: n },
-													}));
-												}
+												if (Number.isFinite(n)) patchSamplers(key, n);
 											}}
 										/>
 									</div>
@@ -554,17 +540,16 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 							</section>
 							)}
 
-							{tab !== "samplers" &&
+							{tab === "prompt" &&
 								(() => {
-									const channel = tab;
-									const blocks = grouped.find(([c]) => c === channel)?.[1] ?? [];
-									const totalChars = blocks.reduce((n, b) => n + (b.enabled ? b.content.length : 0), 0);
+									const blocks = blocksByKind.blocks;
+									const onChars = blocks.reduce((n, b) => n + (b.enabled ? b.content.length : 0), 0);
 									const allOn = blocks.length > 0 && blocks.every((b) => b.enabled);
 									return (
 										<section className="sp-section">
 											<div className="preset-chan-head">
 												<span className="lore-meta">
-													{blocks.length} 块 · 启用 {totalChars.toLocaleString()} 字 · 开关立即生效，点条目展开编辑
+													{`启用块原文按 prompt_order 原序装配进提示词：${blocks.length} 块 · 启用 ${onChars.toLocaleString()} 字`}
 												</span>
 												{blocks.length > 0 && (
 													<button className="act" disabled={busy} onClick={() => toggleChannel(blocks, !allOn)}>
@@ -572,13 +557,14 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 													</button>
 												)}
 											</div>
-											{blocks.length === 0 && <div className="sp-empty">该预设无此通道块。</div>}
+											{blocks.length === 0 && <div className="sp-empty">该预设没有内容块。</div>}
 											{blocks.map((b) => (
 												<PresetBlockEditor
 													key={b.id}
 													block={b}
 													busy={busy}
 													onChange={(patch) => patchBlock(b.id, patch)}
+													onDelete={() => removeBlock(b.id)}
 												/>
 											))}
 										</section>
@@ -587,7 +573,7 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 						</>
 					)}
 					{!draft && !missing && !loadingDetail && (
-						<div className="sp-empty">当前未使用预设。可从上方「导入」一份 ST 预设（自动转换）。</div>
+						<div className="sp-empty">当前未使用预设。可从上方「导入」一份酒馆预设（原文原样存档，不做任何转换）。</div>
 					)}
 				</>
 			)}

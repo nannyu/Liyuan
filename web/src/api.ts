@@ -54,6 +54,7 @@ function invalidateAfterWrite(writePath: string): void {
 		{ test: /^\/api\/auth/, prefixes: ["/api/auth", "/api/models"] },
 		{ test: /^\/api\/channels/, prefixes: ["/api/models", "/api/agent-config", "/api/agent-profiles"] },
 		{ test: /^\/api\/config/, prefixes: ["/api/config"] },
+		{ test: /^\/api\/backup/, prefixes: [] },
 		{ test: /^\/api\/upload/, prefixes: ["/api/uploads"] },
 	];
 	let hit = false;
@@ -394,10 +395,25 @@ export interface LoreSearchHit {
 export interface PresetBlockView {
 	id: string;
 	name: string;
+	/** 派生只读值：相对 chatHistory 槽位的前后（酒馆里这是位置，不是可选属性） */
 	channel: "system" | "postHistory";
 	role: string;
 	enabled: boolean;
+	/** 酒馆内置槽位（Chat History / Char Description…）：占位，无正文 */
+	marker: boolean;
+	/** in-chat 深度注入才有 */
+	depth?: number;
 	chars: number;
+}
+
+/** PUT /api/preset 的块补丁——只发改动，原文其余字节不动 */
+export interface PresetBlockPatch {
+	id: string;
+	enabled?: boolean;
+	name?: string;
+	content?: string;
+	/** 从预设整块移除 */
+	remove?: boolean;
 }
 
 /** GET /api/preset/block 单块全文（编辑用） */
@@ -412,16 +428,11 @@ export interface PresetResponse {
 	dirty?: boolean;
 	preset: {
 		name: string;
+		/** st＝酒馆原文；rp＝v1.4.1 及以前导入的旧梨园格式 */
+		kind?: "st" | "rp";
 		samplers: Record<string, number>;
 		blocks: Array<PresetBlockView & { content?: string }>;
 	} | null;
-}
-
-export interface ConvertReportItem {
-	identifier: string;
-	name: string;
-	action: string;
-	contentChars: number;
 }
 
 export interface CommandMeta {
@@ -562,6 +573,31 @@ export const importCard = (file: File) =>
 			body: file,
 		},
 	);
+
+// ---------- 项目完整备份 / 恢复 ----------
+
+export const createBackup = () =>
+	api<{ ok: true; filename: string; files: number; bytes: number }>("/api/backup/create", {
+		method: "POST",
+		body: "{}",
+	});
+
+/** 导出备份包：走浏览器原生下载（携带访问 Cookie，服务器回 content-disposition） */
+export function downloadBackup(): void {
+	const a = document.createElement("a");
+	a.href = "/api/backup/download";
+	a.download = "";
+	document.body.appendChild(a);
+	a.click();
+	a.remove();
+}
+
+export const importBackup = (file: File) =>
+	api<{ ok: true; note?: string }>("/api/backup/import", {
+		method: "POST",
+		headers: { "content-type": "application/octet-stream" },
+		body: file,
+	});
 
 export function downloadJson(filename: string, data: unknown): void {
 	const blob = new Blob([JSON.stringify(data, null, "\t")], { type: "application/json" });

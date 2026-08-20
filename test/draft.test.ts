@@ -3,21 +3,17 @@ import { test } from "node:test";
 
 import {
 	applyDraftOps,
-	checkDraft,
-	checkSovereignty,
 	DRAFT_DOC_TYPE,
 	DRAFT_OP_TYPE,
 	draftTurnText,
 	emptyDraftRules,
 	extractDraftBody,
 	extractDraftRules,
-	formatDraftReport,
 	isAuditLine,
 	isPoliceBlock,
 	lastSubstantiveRole,
 	parseDraftOp,
 	resolveDraftEdit,
-	rulesAreEmpty,
 	stripAuditLines,
 } from "../src/draft.ts";
 
@@ -116,33 +112,16 @@ test("稿纸工件（v2）：补丁作用于 rp-draft；draftTurnText 以最后�
 	assert.equal(resolveDraftEdit(msgs, "台侧旁白").ok, false, "旁白不可作为修订目标");
 });
 
-test("extractDraftRules：TGbreak 式块——字数/禁词/比喻/句式提取；格式栈标签不再提取（M-C）", () => {
+test("extractDraftRules：只提取字数目标（8/10 验收退役——禁词/比喻/句式不再提取）", () => {
 	const blocks = [
 		"### 字数限制\n<response_length>\n注意：正文的字数控制在500-800字之间。\n</response_length>",
 		"摘要 rule：以紧凑事件链回顾，200~300字。", // 不含"正文"，不得当字数规则
-		'## 禁八股\n<anti_clich>\n词汇黑名单 = { "勾勒得曲线", "指节泛白", "像是", "一秒", "不是…是…" }\n</anti_cliche>',
-		"## 铁律自检：若发现任何先否定再肯定的句子，例如“不是…是…”及其变体，立即改写。",
-		"## 比喻使用原则：频率：5个段落内只允许使用1次比喻。宁缺毋滥。",
-		"选择框设计:\n  rule: \n    - 选择的内容是<user>的行动和决策（以第三人称来描述）。\n    - 按照<w2g>标签名输出，请勿修改标签。\n  format:\n    basic: |-\n<w2g>\nA：…\n</w2g>\n<details>示例不算</details>",
-		"每次回复前，你必须参考<draft>，结果输出在 <draft_notes>中",
+		'## 禁八股\n<anti_clich>\n词汇黑名单 = { "像是", "一秒" }\n</anti_cliche>',
 	];
-	const rules = extractDraftRules(blocks, ["`<StatusBlock>…</StatusBlock>`", "`<state1>…</state1>`（或卡约定的 state 序号）"]);
+	const rules = extractDraftRules(blocks);
 	assert.deepEqual(rules.wordRange, { min: 500, max: 800 }, "取正文字数而非摘要字数");
-	assert.ok(rules.bannedWords.includes("像是") && rules.bannedWords.includes("一秒"));
-	assert.ok(!rules.bannedWords.includes("不是…是…"), "句式示意不当字面禁词");
-	assert.equal(rules.metaphorRule, true);
-	assert.equal(rules.banNegPos, true);
-	// M-C 拆层：w2g/draft_notes 等预设格式栈已由工具流/账本渲染承接——
-	// draft_check 不再逼模型手写格式块（否则拆层摘除与验收器互相打架）
-	assert.deepEqual(rules.requiredTags, [], "格式栈标签一律不再提取");
-	assert.deepEqual(rules.statusBarTagGroup, ["StatusBlock", "state1"], "卡状态栏组保留（卡的设计）");
-});
-
-test("extractDraftRules：无规则预设→空规则；rulesAreEmpty 判定", () => {
-	const rules = extractDraftRules(["<用户厌恶的词汇>用户无法理解且厌恶下列词汇：“喉结”</用户厌恶的词汇>"]);
-	assert.deepEqual(rules.bannedWords, ["喉结"]);
-	assert.equal(rulesAreEmpty(rules), false);
-	assert.equal(rulesAreEmpty(extractDraftRules(["纯文风描述，无机械约束。"])), true);
+	assert.deepEqual(Object.keys(rules), ["wordRange"], "除字数目标外不提取任何检测规则");
+	assert.deepEqual(extractDraftRules(["纯文风描述，无机械约束。"]), {}, "无字数块→空规则");
 });
 
 test("isPoliceBlock：纪律块（禁词/八股/比喻/句式）判真；文风/字数/格式块判假", () => {
@@ -176,111 +155,11 @@ test("extractDraftBody：剥标签模块与注释，只剩正文", () => {
 	assert.ok(!body.includes("检查表") && !body.includes("选项一") && !body.includes("🕰️"));
 });
 
-test("checkDraft：禁词/句式全报；状态栏与字数只提示不违规（8/09 末端修复删除）", () => {
-	const rules = extractDraftRules(
-		[
-			"字数限制：正文的字数控制在50-150字之间。",
-			'词汇黑名单 = { "像是" }',
-			"若发现先否定再肯定的句子（不是…是…）立即改写",
-			"选择框设计: 按照<w2g>标签名输出",
-		],
-		["`<state1>…</state1>`"],
-	);
-	const bad = "他像是很平静，这不是恐惧，而是敬畏。";
-	const r1 = checkDraft(bad, rules);
-	assert.equal(r1.pass, false);
-	assert.ok(r1.violations.some((v) => v.includes("禁词「像是」")));
-	assert.ok(r1.violations.some((v) => v.includes("不是…是…")));
-	assert.ok(!r1.violations.some((v) => v.includes("<w2g>")), "格式栈块不再逼补（M-C）");
-	assert.ok(!r1.violations.some((v) => v.includes("状态栏")), "状态栏归输出层，不判稿纸违规（8/09）");
-	assert.ok(!r1.violations.some((v) => v.includes("下限")), "字数只提示不违规（8/09）");
-	assert.ok(r1.notes.some((n) => n.includes("下限")), "字数不足进 notes 提示");
 
-	const good =
-		"他看起来很平静，眼神里带着敬畏，手却收得很稳。灯芯晃了一下，他伸手拨正，指腹压住案上的纸角，把那句没说出口的话也一并压住了。窗外更声过了三巡。\n<state1>🕰️: x</state1>";
-	const r2 = checkDraft(good, rules);
-	assert.equal(r2.pass, true, `不应有违规：${r2.violations.join("；")}`);
-	assert.ok(formatDraftReport(r2).includes("核验通过"));
-	assert.ok(formatDraftReport(r1).includes("draft_edit"));
-});
 
-test("checkDraft：markdown 标题符号判违规——正文不是文档（8/09 实弹「### *啪……*」）", () => {
-	const rules = emptyDraftRules();
-	const bad = "他抬手落下。\n\n### *啪……啪……啪*\n\n她闷哼一声。";
-	const r1 = checkDraft(bad, rules);
-	assert.ok(
-		r1.violations.some((v) => v.includes("markdown 标题符号")),
-		"行首 # 号判违规（无预设也判——机械格式纪律）",
-	);
-	// 正文中非行首的 #（罕见）不误伤；状态栏标签块内的内容不参与（extractDraftBody 已剥）
-	const ok = "他抬手落下，啪、啪、啪，三声脆响。\n<StatusBlock>\n# 无关\n</StatusBlock>";
-	const r2 = checkDraft(ok, rules);
-	assert.ok(!r2.violations.some((v) => v.includes("markdown")), "标签块内与无标题正文不误伤");
-});
 
-test("checkDraft：比喻词复合词不误伤 + 违规带引文（8/09 实弹「摄像机」连修 9 轮）", () => {
-	const rules = emptyDraftRules();
-	rules.metaphorRule = true;
-	// 「摄像机」×2 + 「录像」「图像」——全是复合词，一处比喻都没有
-	const clean =
-		"长桌上架着一台摄像机。她跪到桌前。\n\n摄像机上的红灯亮起来。屏幕上的图像晃了晃，录像开始了。";
-	const r1 = checkDraft(clean, rules);
-	assert.ok(!r1.violations.some((v) => v.includes("比喻")), "复合词「摄像机/图像/录像」不计比喻");
-	// 真比喻照计，且违规文案带命中引文（模型不用盲猜位置）
-	const bad = "她站在那里，像一尊沉默的碑。\n他仿佛没听见。\n风好似停了。";
-	const r2 = checkDraft(bad, rules);
-	const v = r2.violations.find((x) => x.includes("比喻"));
-	assert.ok(v, "真比喻超限判违规");
-	assert.ok(v!.includes("像一尊沉默"), "违规带命中处引文");
-});
 
-test("checkDraft：状态栏不再参与验收（8/09：归输出层，mergeFinalText 拼接）", () => {
-	// 状态栏/格式模块彻底从稿纸验收摘除——无论缺不缺、什么形态，都不报
-	const rules = extractDraftRules([], ["`<StatusPlaceHolderImpl/>`"]);
-	assert.deepEqual(rules.statusBarTagGroup, ["StatusPlaceHolderImpl"]);
 
-	const withSelfClose = "正文一段。\n<StatusPlaceHolderImpl/>\n<catsay>点评</catsay>";
-	const r1 = checkDraft(withSelfClose, rules);
-	assert.ok(!r1.violations.some((v) => v.includes("状态栏")), "自闭合形态不报");
-
-	const withPaired = "正文一段。\n<StatusPlaceHolderImpl>\n地点：徐州城\n</StatusPlaceHolderImpl>";
-	const r2 = checkDraft(withPaired, rules);
-	assert.ok(!r2.violations.some((v) => v.includes("状态栏")), "成对形态不报");
-
-	const missing = "只有正文。";
-	const r3 = checkDraft(missing, rules);
-	assert.ok(!r3.violations.some((v) => v.includes("状态栏")), "缺了也不报——状态栏归输出层（8/09）");
-	assert.equal(r3.pass, true, "缺状态栏不再是稿纸违规");
-});
-
-test("checkDraft：比喻词只扫叙述层——对白里的「像」不计数（8/08 实弹回归）", () => {
-	const rules = extractDraftRules(["比喻使用原则：频率：5个段落内只允许使用1次比喻。"]);
-	// 实弹原形：三句对白全是人物在说「像」，叙述层一个比喻都没有。
-	// 旧规则计成 3 次并判违规，模型两段思考全花在跟计数搏斗、最后把对白改僵。
-	const dialogue = "“像吗？真的像吗？”她问。\n\n“像。”我说，“挺像回事的。”\n\n她笑了。";
-	const r = checkDraft(dialogue, rules);
-	assert.equal(r.violations.length, 0, "对白里的像不是作者在打比方");
-	assert.ok(!r.notes.some((n) => n.includes("比喻词")), "既不计数也不提示");
-
-	// 叙述层的真比喻照旧受管——修的是误判，不是把规则关掉
-	const narration = "夜像墨。\n\n风像刀。\n\n人像影。";
-	assert.ok(checkDraft(narration, rules).violations.some((v) => v.includes("比喻词 3 次")));
-
-	// 混合稿：只数叙述层那一处，对白不计入
-	const mixed = "夜像墨。\n\n“像吗？”她问。\n\n“像。”我说。";
-	assert.equal(checkDraft(mixed, rules).violations.length, 0);
-});
-
-test("checkDraft：比喻频率超限报违规，限内只进 notes", () => {
-	const rules = extractDraftRules(["比喻使用原则：频率：5个段落内只允许使用1次比喻。"]);
-	const over = "夜像墨。\n\n风像刀。\n\n人像影。";
-	const r = checkDraft(over, rules);
-	assert.ok(r.violations.some((v) => v.includes("比喻词 3 次")));
-	const ok = "夜像墨，浓得化不开。\n\n他把灯拨亮了一点。\n\n窗外没有声音。";
-	const r2 = checkDraft(ok, rules);
-	assert.equal(r2.violations.length, 0);
-	assert.ok(r2.notes.length > 0);
-});
 
 test("lastSubstantiveRole：跳过稿纸工件条目——末条=工件不得误判续轮（2026-08-02 事故回归）", () => {
 	// 直落树后 doc/op 常贴在 toolResult 前后：判定必须穿透它们看到 toolResult
@@ -301,7 +180,7 @@ test("lastSubstantiveRole：跳过稿纸工件条目——末条=工件不得误
 	assert.equal(lastSubstantiveRole([]), undefined);
 });
 
-// ---------------- M2：append 补丁形态 + 用户主权红线 ----------------
+// ---------------- M2：append 补丁形态 ----------------
 
 test("append 补丁：parseDraftOp 认 {append}；applyDraftOps 补到最近目标消息末尾", () => {
 	assert.deepEqual(parseDraftOp(JSON.stringify({ append: "<state1>状态栏</state1>" })), {
@@ -320,36 +199,6 @@ test("append 补丁：parseDraftOp 认 {append}；applyDraftOps 补到最近目�
 	// string content 形态同样可追加
 	const r2 = applyDraftOps([{ role: "assistant", content: "散文本。" }, appendOp]);
 	assert.equal(r2.messages[0].content, "散文本。\n\n<state1>补上的状态栏</state1>");
-});
-
-test("checkSovereignty：代写对白/代述内心/代做决定三类命中，均带原文引用", () => {
-	const bad = [
-		"雨声渐密。沈舟说：「这里不安全，我们换个地方。」",
-		"烛火摇动，沈舟心想：她一定在骗我。",
-		"你答应了她的请求，接过那枚玉佩。",
-	].join("\n");
-	const hits = checkSovereignty(bad, "沈舟", "云澜");
-	assert.ok(hits.some((h) => h.includes("代写对白")), "应抓到代写对白");
-	assert.ok(hits.some((h) => h.includes("代述内心")), "应抓到代述内心");
-	assert.ok(hits.some((h) => h.includes("代做决定")), "应抓到代做决定");
-	assert.ok(hits.every((h) => h.includes("沈舟")), "违规文案应点名用户角色");
-});
-
-test("checkSovereignty：合法形态不误伤——对白内让渡、建议语气、动作复述、旁人说话", () => {
-	const good = [
-		"「你决定了就好。」云澜垂眸，指尖在剑柄上敲了敲。", // 角色对白里的"你决定"：引号内不查
-		"你可以选择留下，也可以趁夜色离开。", // 建议语气：guard 放行
-		"你拱手行礼，雨水顺着袖口滴落。", // 动作复述不在检查之列
-		"云澜说：「山门要落锁了。」", // 旁人（角色）说话
-		"她听见你说过山下的事，却没有接话。", // 听闻转述不算代写
-	].join("\n");
-	assert.deepEqual(checkSovereignty(good, "沈舟", "云澜"), []);
-});
-
-test("checkSovereignty：模块标签内不查（选项块的「你可以」不误伤）；空 userName 直接放行", () => {
-	const withOptions = "正文一段。\n<options>\nA. 你决定了断此事\nB. 你答应了她\n</options>";
-	assert.deepEqual(checkSovereignty(withOptions, "沈舟"), []);
-	assert.deepEqual(checkSovereignty("你答应了。", "  "), []);
 });
 
 // ---------------- M4.5 句级过滤（慢因 B 残余） ----------------
@@ -416,33 +265,4 @@ test("isAuditLine：动笔前一次性读题/规划不摘——只摘逐句逐�
 	assert.ok(isAuditLine("写完后检查：这段反应是否只是在表演人设标签？"));
 });
 
-test("checkDraft：字数一律只提示不违规（8/09：末端修复删除，字数归规划层）", () => {
-	const rules = { ...emptyDraftRules(), wordRange: { min: 50, max: 60 } };
 
-	// 超标 → note 不打回
-	const over = checkDraft("一".repeat(80), rules);
-	assert.ok(!over.violations.find((x) => x.includes("字")), "超标不应是 violation");
-	assert.ok(over.notes.find((x) => x.includes("上限")), "超标应出 note");
-
-	// 极端超标 → 也只是 note
-	const extreme = checkDraft("一".repeat(200), rules);
-	assert.ok(!extreme.violations.find((x) => x.includes("上限")), "极端超标也不再是 violation（8/09）");
-	assert.ok(extreme.notes.find((x) => x.includes("上限")), "极端超标进 note");
-
-	// 不足 → note 不打回
-	const under = checkDraft("一".repeat(30), rules);
-	assert.ok(!under.violations.find((x) => x.includes("字")), "不足不应是 violation");
-	assert.ok(under.notes.find((x) => x.includes("下限")), "不足应出 note");
-
-	// 极端不足 → 也只是 note
-	const extremeUnder = checkDraft("一".repeat(5), rules);
-	assert.ok(!extremeUnder.violations.find((x) => x.includes("下限")), "极端不足也不再是 violation（8/09）");
-	assert.ok(extremeUnder.notes.find((x) => x.includes("下限")), "极端不足进 note");
-});
-
-test("formatDraftReport：指路 draft_edit 定点改，不再说「重交全文」", () => {
-	const rules = { ...emptyDraftRules(), wordRange: { min: 500, max: 800 } };
-	const txt = formatDraftReport(checkDraft("短", rules));
-	assert.match(txt, /核验通过/, "字数只提示 → 短稿仍通过核验（8/09）");
-	assert.ok(txt.includes("下限"), "字数提示仍在报告里");
-});

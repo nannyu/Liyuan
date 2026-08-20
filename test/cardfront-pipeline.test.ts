@@ -1,17 +1,17 @@
 /**
  * 端到端显示管线：卡 raw → displayRules → RichContent 真路径（splitRichContentParts）。
- * 必须含 splitStatusParts 同序，否则会绿测坏集成（皮肤内 <status> 被状态面板撕碎）。
+ * 作者正则先跑（applyCardSkin），产物是标准 HTML；梨园不再按标签名抠「统一状态卡」。
  */
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import test from "node:test";
 import { readCardRawJson } from "../src/card.ts";
 import { buildCardFrontSnapshot, displayRules, extractRegexScripts } from "../src/cardfront.ts";
+import { prepareDisplayText } from "../src/postprocess.ts";
 import { applyCardSkin } from "../web/src/cardSkin.ts";
 import { isFullInterface, splitHtmlParts } from "../web/src/htmlEmbed.ts";
 import { buildSrcDoc } from "../web/src/frameDoc.ts";
 import { splitRichContentParts } from "../web/src/richContentParts.ts";
-import { splitStatusParts } from "../web/src/statusBlocks.ts";
 
 /** 淫宫美人录形态：开闭标签换皮（内含 <status>，会误触发 isPanelTagName） */
 const skinScripts = [
@@ -46,6 +46,47 @@ const sampleRaw = {
 
 const macros = { charName: "青梧", userName: "旅人" };
 
+test("pipeline: 页面级 CSS 端到端——不再被 unwrap 剥成裸 CSS 上屏,整块进 iframe", () => {
+	// 修仙世界模拟器 [美化]状态栏 实卡形态：顶层 <style> + 自己的容器,无 doctype 无围栏。
+	// 改动前实测：<style> 被 unwrap 剥掉 → 737 字 CSS 当正文上屏,容器 div 一起没了,只剩裸数值。
+	const raw = {
+		data: {
+			name: "修真",
+			extensions: {
+				regex_scripts: [
+					{
+						scriptName: "[美化]状态栏",
+						findRegex: "/<StatusBar>\\s*\\n([\\s\\S]*?)<\\/StatusBar>/gi",
+						replaceString:
+							'<style>\n.xzs{background:#eef}\n.xzs-b{white-space:pre-line}\n</style>\n<div class="xzs"><div class="xzs-b">$1</div></div>',
+						placement: [2],
+						disabled: false,
+						markdownOnly: true,
+						promptOnly: false,
+					},
+				],
+			},
+		},
+	};
+	const rules = displayRules(extractRegexScripts(raw));
+	const skin = { rules, charName: "云澜", userName: "旅人" };
+	const body = "他掐诀入定，识海翻涌。\n\n<StatusBar>\n境界：炼气三层\n灵石：320\n</StatusBar>";
+
+	const displayed = prepareDisplayText(body, skin);
+	const parts = splitRichContentParts(displayed, skin);
+	const htmlParts = parts.filter((p) => p.kind === "html") as Array<{ kind: "html"; html: string }>;
+
+	assert.equal(htmlParts.length, 1, "状态栏整块进一个帧");
+	assert.ok(/<style/i.test(htmlParts[0].html), "<style> 必须进框——被剥掉就是 CSS 当正文上屏");
+	assert.ok(/class="xzs"/.test(htmlParts[0].html), "容器结构也在框里(原来连 div 一起被剥)");
+	assert.ok(htmlParts[0].html.includes("炼气三层"), "状态栏数值在框里");
+
+	const textParts = parts.filter((p) => p.kind === "text") as Array<{ kind: "text"; text: string }>;
+	const outside = textParts.map((p) => p.text).join("\n");
+	assert.ok(outside.includes("他掐诀入定"), "叙事留在框外,照常走正文渲染");
+	assert.ok(!outside.includes(".xzs{"), "CSS 不得留在正文里");
+});
+
 test("pipeline: 提取→应用→混排切分→无痕 srcdoc", () => {
 	const rules = displayRules(extractRegexScripts(sampleRaw));
 	assert.equal(rules.length, 2);
@@ -76,19 +117,9 @@ test("RichContent 真路径: 皮肤后 HTML 先认领,status 不撕碎 div", () 
 	const text = "雨停了。\n<StatusBlock>\nHP: 80\nMP: 20\n</StatusBlock>\n她抬头。";
 	const skin = { rules, ...macros };
 
-	// 反例：旧序 skin → splitStatusParts 会偷走 <status>，外层 div 残骸
-	const skinned = applyCardSkin(text, rules, macros);
-	const badOrder = splitStatusParts(skinned);
-	assert.ok(
-		badOrder.some((p) => p.kind === "status"),
-		"对照:旧序会把 <status> 当成状态面板",
-	);
-
 	// 真路径（Messages.RichContent → splitRichContentParts）
 	const parts = splitRichContentParts(text, skin);
-	const statuses = parts.filter((p) => p.kind === "status");
 	const htmls = parts.filter((p) => p.kind === "html");
-	assert.equal(statuses.length, 0, "皮肤产物内 status 不得落 StatusPanel");
 	assert.equal(htmls.length, 1, "应保留单一 html 段(外层 div)");
 	if (htmls[0].kind === "html") {
 		assert.ok(htmls[0].html.startsWith("<div"));
@@ -104,11 +135,15 @@ test("RichContent 真路径: 皮肤后 HTML 先认领,status 不撕碎 div", () 
 	assert.ok(parts.some((p) => p.kind === "text" && p.text.includes("她抬头")));
 });
 
-test("RichContent 真路径: 无皮肤时 StatusBlock 仍落状态面板", () => {
+test("显示管线: 无作者正则时 StatusBlock 剥壳成裸文本(对齐酒馆,不画梨园灰框)", () => {
 	const text = "前文\n<StatusBlock>\nHP: 80\n</StatusBlock>\n后文";
-	const parts = splitRichContentParts(text, null);
-	assert.ok(parts.some((p) => p.kind === "status" && p.tag === "statusblock"));
-	assert.equal(parts.filter((p) => p.kind === "html").length, 0);
+	// 服务端 prepareDisplayText 负责 unwrap（对齐酒馆 DOMPurify 剥未知标签）
+	const displayed = prepareDisplayText(text, null);
+	assert.ok(!displayed.includes("<StatusBlock>"), "标签本身剥掉");
+	assert.ok(displayed.includes("HP: 80"), "状态栏内容作为正文保留");
+	// 前端这层只负责不把它抠成梨园灰框（作者没写正则 → 无 html 段）
+	const parts = splitRichContentParts(displayed, null);
+	assert.equal(parts.filter((p) => p.kind === "html").length, 0, "无正则不出 html 段");
 });
 
 test("pipeline: 整楼界面判定", () => {
@@ -131,7 +166,7 @@ test("pipeline: 整楼界面判定", () => {
 
 test("pipeline: 关闭皮肤=不应用规则时 StatusBlock 仍为文本段(html 层)", () => {
 	const text = "<StatusBlock>\nHP: 80\n</StatusBlock>";
-	// 无规则：不切 html（自定义标签留给 statusBlocks）
+	// 无规则：自定义标签不触发 html 块切分（剥壳是服务端 unwrap 的活）
 	const parts = splitHtmlParts(text);
 	assert.equal(parts.length, 1);
 	assert.equal(parts[0].kind, "text");
@@ -186,7 +221,7 @@ test("实卡 淫宫美人录: first_mes/备选开场白 一律 html 皮肤、零
 		}
 	}
 
-	// 无皮肤注入时才允许 status 段(对照)
+	// 无作者正则时：不出 html 段（不画梨园灰框）；标签剥壳是服务端 prepareDisplayText 的活
 	const bare = splitRichContentParts(greetings[0], null);
-	assert.ok(bare.some((p) => p.kind === "status"), "无皮时应走统一状态卡(对照)");
+	assert.equal(bare.filter((p) => p.kind === "html").length, 0, "无正则不出 html 段");
 });

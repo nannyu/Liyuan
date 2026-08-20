@@ -260,3 +260,36 @@ test("patchLorebookFileEntry：改 constant/order 写回并保留其它条目", 
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+test("patchLorebookFileEntry：enabled 写回源文件（导入即关闭的条目可启用）", () => {
+	const dir = mkdtempSync(join(tmpdir(), "liyuan-lore-"));
+	try {
+		const dest = join(dir, "book.json");
+		// ST 对象 entries 格式，条目带 disable:true——导入即关闭的典型来源
+		writeFileSync(
+			dest,
+			JSON.stringify({
+				name: "book",
+				entries: {
+					"0": { uid: 0, key: ["x"], content: "c", disable: true, order: 100 },
+				},
+			}),
+			"utf8",
+		);
+		const before = loadLorebookFile(dest);
+		assert.equal(before[0].enabled, false, "源文件 disable:true 应归一化为停用");
+		const fp = loreFingerprint(before[0].content);
+		const r = patchLorebookFileEntry(dest, fp, { enabled: true });
+		assert.ok(r);
+		assert.equal(r.entry.enabled, true);
+		const after = loadLorebookFile(dest);
+		assert.equal(after[0].enabled, true, "写回后应可启用");
+		const raw = JSON.parse(readFileSync(dest, "utf8")) as {
+			entries: Record<string, { disable?: boolean; enabled?: boolean }>;
+		};
+		assert.equal(raw.entries["0"].disable, false, "ST 字段 disable 应翻为 false");
+		assert.equal(raw.entries["0"].enabled, true, "V2 字段 enabled 应翻为 true");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

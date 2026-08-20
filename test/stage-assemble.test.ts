@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -14,7 +14,9 @@ import {
 	codexNamesFromBranch,
 	type BranchEntryLike,
 } from "../src/stage/assemble.ts";
-import { constantLoreOf, evalPostHistoryBlocks, loadStageMaterials } from "../src/stage/materials.ts";
+import type { DisplayRule } from "../src/cardfront.ts";
+import { extractDraftRules } from "../src/draft.ts";
+import { assemblePresetAfter, constantLoreOf, loadStageMaterials } from "../src/stage/materials.ts";
 import { defaultState } from "../src/state.ts";
 import { DEFAULT_CONFIG, type RpConfig } from "../src/types.ts";
 
@@ -63,6 +65,81 @@ test("rebuildHistory：开场白→assistant、补丁套用、过程条目蒸发
 	assert.ok(!history[2].text.includes("内心盘算"), "thinking 不进历史");
 	assert.equal(lastUserText, "说明来意。");
 	assert.ok(lastNarrativeText.includes("夜霜"), "语言检测源=最后台上叙事（含补丁）");
+});
+
+test("rebuildHistory：送模侧作者正则（promptOnly/破坏性）剥「作者不想让模型看」的块", () => {
+	const branch: BranchEntryLike[] = [
+		userE("你先进去。"),
+		{
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "text", text: "正文一句。\n\n<w2g>选项：1 走 2 停</w2g>\n\n<SexualScene>内容</SexualScene>" },
+				],
+			},
+		},
+	];
+	const promptRulesFixture: DisplayRule[] = [
+		// TG-ai看不见 同款：剥 VariableCheck/SexualScene/Disclaimer/w2g
+		{
+			name: "TG-ai看不见",
+			source: "<(VariableCheck|SexualScene|Disclaimer|w2g)>([\\s\\S]*?)<\\/\\1>|<!--([\\s\\S]*?)-->",
+			flags: "g",
+			replace: "",
+		},
+	];
+	const { history } = rebuildHistory(branch, promptRulesFixture);
+	const sent = history[history.length - 1].text;
+	assert.ok(sent.includes("正文一句"), "正文保留");
+	assert.ok(!sent.includes("w2g"), "作者 promptOnly 规则剥掉不想让模型看的块");
+	assert.ok(!sent.includes("SexualScene"), "同上");
+	// 对照组：不传规则 → 块原样进历史（unwrapped 内容仍在）
+	const { history: ctrl } = rebuildHistory(branch);
+	assert.ok(ctrl[ctrl.length - 1].text.includes("SexualScene") || ctrl[ctrl.length - 1].text.includes("内容"), "无规则时不剥");
+});
+
+test("rebuildHistory：送模侧深度限定——旧状态栏剥掉，最新那条留着当模型的格式模仿源", () => {
+	// Living With Slaves 实卡形态：`隐藏历史多状态栏`（minDepth:3 起、replace 空）
+	// 与 `折叠通用多状态栏`（maxDepth:2）是按深度互补的一对。忽略 depth 全深度跑，
+	// 历史里一个范例都不剩，模型每拍得从散文重推格式。
+	const hideOld: DisplayRule[] = [
+		{ name: "隐藏历史多状态栏", source: "<state1>[\\s\\S]*?<\\/state1>", flags: "g", replace: "", minDepth: 3 },
+	];
+	const branch: BranchEntryLike[] = [
+		asstE("老段。\n<state1>老栏</state1>"),
+		userE("u1"),
+		asstE("新段。\n<state1>新栏</state1>"),
+		userE("u2"),
+	];
+	// 合并后 4 条：老段 depth3 / u1 depth2 / 新段 depth1 / u2 depth0
+	const { history } = rebuildHistory(branch, hideOld);
+	assert.ok(!history[0].text.includes("老栏"), "depth≥3 的旧状态栏剥掉（省上下文）");
+	assert.ok(history[0].text.includes("老段"), "只剥状态栏，正文不动");
+	assert.ok(history[2].text.includes("新栏"), "最新那条留着——模型的格式模仿源");
+
+	// 对照：忽略 depth 全深度跑（改动前的行为）＝连最新的也删光
+	const noDepth = hideOld.map(({ minDepth: _drop, ...r }) => r);
+	const { history: flat } = rebuildHistory(branch, noDepth);
+	assert.ok(!flat[2].text.includes("新栏"), "对照组确实会把最新的也删光");
+});
+
+test("rebuildHistory：深度按合并后的历史条目数，一拍多条 message 只算一条", () => {
+	// 一拍在梨园是多条 assistant message（多轮工具＋多段正文），在酒馆眼里是一条消息。
+	// 按原始条目数算，本拍第一段就落到 depth 3，作者的 minDepth:2 会把本拍状态栏删掉。
+	const hide: DisplayRule[] = [
+		{ name: "隐藏历史", source: "<state1>[\\s\\S]*?<\\/state1>", flags: "g", replace: "", minDepth: 2 },
+	];
+	const branch: BranchEntryLike[] = [
+		userE("u1"),
+		asstE("第一段。\n<state1>本拍栏</state1>"),
+		asstE("第二段。"),
+		asstE("第三段。"),
+		asstE("第四段。"),
+	];
+	const { history } = rebuildHistory(branch, hide);
+	assert.equal(history.length, 2, "四条 assistant 合成一条历史");
+	assert.ok(history[1].text.includes("本拍栏"), "本拍整体 depth 0，状态栏必须留着");
 });
 
 test("rebuildHistory：幕后轮的回复不作语言检测源；rp-import 记为 user 侧", () => {
@@ -125,124 +202,120 @@ const card = {
 };
 const config: RpConfig = { ...DEFAULT_CONFIG, userName: "沈舟" };
 
-test("system prompt：状态栏提示词分型——占位符型不引导展开成对写法", () => {
-	// 占位符型（自闭合 <Tag/>：界面由卡渲染）：模型只该原样输出占位符，不得填内容
-	const placeholder = buildStageSystemPrompt({
-		card,
-		config,
-		constantLore: [],
-		statusBarFormats: ["`<StatusPlaceHolderImpl/>`"],
-	});
-	assert.ok(placeholder.includes("占位符渲染状态栏界面"), "占位符语义说明在场");
-	assert.ok(placeholder.includes("原样输出"), "要求原样输出");
-	assert.ok(placeholder.includes("不要展开成成对写法"), "明确禁止展开成对（8/05：模型写成对标签导致卡正则打空）");
-	assert.ok(placeholder.includes("不要往里填内容"), "明确禁止填内容");
-	assert.ok(!placeholder.includes("包住整块写出"), "占位符型不得沿用面板型措辞");
-
-	// 面板型（成对 <state1>…</state1>）：模型用标签包住内容
-	const panel = buildStageSystemPrompt({ card, config, constantLore: [], statusBarFormats: ["`<state1>…</state1>`"] });
-	assert.ok(panel.includes("包住整块写出"), "面板型保留包住整块的语义");
-	assert.ok(panel.includes("字段随本拍剧情更新"), "面板型保留字段更新语义");
-
-	// 末端导演备注同样分型（buildStageInjection）
-	const inj = buildStageInjection({
-		state: { time: "", location: "", characters: {}, inventory: [], flags: {}, plot_threads: [] },
-		activatedLore: [],
-		card,
-		config,
-		statusBarFormats: ["`<StatusPlaceHolderImpl/>`"],
-	});
-	assert.ok(inj.includes("自闭合占位符"), "导演备注：占位符语义");
-});
-
-test("system prompt：字节稳定、宏替换、主权红线随预设让位", () => {	const opts = { card, config, constantLore: [], statusBarFormats: ["state1"] };
+test("system prompt：字节稳定、宏替换；扮演话语零残留（P1——扮演的每个字都有署名主人）", () => {
+	const opts = { card, config, constantLore: [] };
 	const a = buildStageSystemPrompt(opts);
 	const b = buildStageSystemPrompt(opts);
 	assert.equal(a, b, "同素材两次装配必须逐字节一致");
 	assert.ok(a.includes("沈舟的同门师姐"), "{{user}} 宏应替换");
-	assert.ok(a.includes("绝不替 沈舟 说话、行动"), "无预设：harness 兜底纪律在场（叙事与文风节）");
-	assert.ok(a.includes("state1"), "状态栏格式线索在场");
-	assert.ok(a.includes("停在 沈舟 可以接话"), "演完即停是 harness 缺省（正面祈使句）");
-	assert.ok(a.includes("一场长篇沉浸式角色扮演"), "舞台只声明角色扮演（不抢预设身份工作）");
+	assert.ok(a.includes("一场长篇沉浸式角色扮演"), "舞台声明在场（数据）");
+	// D1/D2/D3：harness 扮演文案全数退场
+	assert.ok(!a.includes("# 叙事与文风"), "D1：叙事与文风段已删");
+	assert.ok(!a.includes("# 输出结构"), "D2：输出结构段已删");
+	assert.ok(!a.includes("状态栏"), "状态栏在 system 零提及（唯一席位是谢幕注入）");
+	assert.ok(!a.includes("资深作家") && !a.includes("倾尽所有"), "D3：作家咏叹调已删");
+	assert.ok(!a.includes("主权") && !a.includes("绝不替"), "主权兜底迁默认预设，harness 不再持有");
+	assert.ok(!a.includes("800–1500") && !a.includes("800-1500"), "篇幅兜底迁默认预设");
+});
 
+test("system prompt：# 工作方式 = 纯协议（§2.1-5 逐字）；tools=false 时不出现", () => {
+	const p = buildStageSystemPrompt({ card, config, constantLore: [] });
+	assert.ok(p.includes("# 工作方式"), "工作方式节在场");
+	assert.ok(
+		p.includes(
+			"每拍第 1 轮用 `beat_plan` 列路标（没有戏的拍可 `draft_write` 一次交完）；正文用 `draft_append` 逐路标写在稿纸上，写完 `draft_seal` 收笔。剧情走向要用户拍板时随时 `ask`。每轮注入的【进度】【判定】【记账】【谢幕】是当前状态，以它为准。",
+		),
+		"文案即规格，逐字一致",
+	);
+	const noTools = buildStageSystemPrompt({ card, config, constantLore: [], tools: false });
+	assert.ok(!noTools.includes("# 工作方式"), "无工具形态不声明工作方式");
+	assert.ok(!noTools.includes("memory_search") && !noTools.includes("lorebook_search"), "语义表的工具指引随 tools=false 摘除");
+});
+
+test("system prompt：消息流约定补齐名录/面板/索引语义（每拍注入借此瘦成纯数据）", () => {
+	const p = buildStageSystemPrompt({ card, config, constantLore: [] });
+	assert.ok(p.includes("标注【登场名录】"), "名录语义入表");
+	assert.ok(p.includes("标注【活跃面板】"), "面板语义入表");
+	assert.ok(p.includes("标注【设定集索引】"), "索引语义入表");
+	assert.ok(p.includes("`memory_search`") && p.includes("`lorebook_search`"), "检索通道指引在语义表（一次说清）");
+});
+
+test("system prompt：梨园架构段最前，预设装配段随后、原文原序，harness 骨架殿后", () => {
 	const withPreset = buildStageSystemPrompt({
-		...opts,
-		presetActive: true,
-		presetResident: {
-			aBlocks: [{ id: "s0", content: "破限框架原文。", channel: "system", enabled: true }],
-			styleTexts: ["文风块：要生动。"],
-			boundaryTexts: ["不替用户做重大决定。"],
-		},
+		card,
+		config,
+		constantLore: [],
+		presetBefore: ["破限框架原文。", "文风块：要生动。", "不替用户做重大决定。"],
 	});
-	assert.ok(withPreset.includes("扮演规范以用户预设为准"), "预设在场：扮演规范让位");
-	assert.ok(!withPreset.includes("用户主权"), "让位后 harness 不重复立规");
-	assert.ok(withPreset.includes("破限框架原文。"), "A 类原文进场（预设指令段）");
-	assert.ok(withPreset.includes("文风块：要生动。"), "B 类进「文风与写法」节");
-	assert.ok(withPreset.indexOf("# 文风与写法") > 0 && !withPreset.includes("不要在思考里逐条自查"), "P10：机械纪律去重，B 节不再重复自查指令");
-	assert.ok(withPreset.includes("不替用户做重大决定。"), "C 类进「行为边界」节");
+	assert.ok(withPreset.startsWith("# 梨园运行架构"), "架构段最前：模型先读梨园怎么运转，再读预设");
+	const at = (t: string) => withPreset.indexOf(t);
+	assert.ok(at("# 梨园运行架构") < at("破限框架原文。"), "架构段先于预设装配段");
+	assert.ok(!withPreset.includes("# 预设指令（用户自备，按原序）"), "梨园不再给预设加标题（铁律一）");
+	assert.ok(at("破限框架原文。") < at("文风块：要生动。") && at("文风块：要生动。") < at("不替用户做重大决定。"), "原序保持");
+	assert.ok(at("不替用户做重大决定。") < at("# 舞台"), "harness 骨架殿后");
+	assert.ok(!withPreset.includes("# 文风与写法") && !withPreset.includes("# 行为边界"), "B/C 归拢节已拆（零归拢）");
+	// 架构段只讲系统怎么运转：不定义角色、不教写作、不举写作细节（那些归预设/工具描述）
+	const arch = withPreset.slice(0, withPreset.indexOf("破限框架原文。"));
+	assert.ok(!arch.includes("你是") && !arch.includes("你的名字"), "架构段不定义角色身份（碰破限）");
+	assert.ok(!arch.includes("神态") && !arch.includes("对白") && !arch.includes("环境"), "架构段不举写作细节");
 });
 
-test("system prompt：构思成清单 + 最小稿纸循环，其他工具仍由 schema 自我说明", () => {
-	const opts = { card, config, constantLore: [], statusBarFormats: [] };
-	const without = buildStageSystemPrompt(opts);
-	const withSkill = buildStageSystemPrompt({ ...opts, skillTopics: ["general", "nsfw"] });
-	for (const p of [without, withSkill]) {
-		assert.ok(p.includes("角色扮演"), "先说清在做什么");
-		// P2：删「始终思考剧情的发展走向」越权句，全貌思考不再合法化到每一轮
-		assert.ok(!p.includes("始终思考剧情"), "不把全貌思考合法化到每一轮");
-		assert.ok(p.includes("资深作家"), "身份激活：把自己当成资深作家");
-		assert.ok(p.includes("你需要读懂本拍处境"), "第 1 轮祈使句");
-		assert.ok(p.includes("发挥自己职业作家的水平"), "每轮开始祈使句（身份激活）");
-		assert.ok(p.includes("倾尽所有的去构思"), "写作过程中祈使句（强度上限）");
-		assert.ok(p.includes("以注入为准"), "具体步骤以每轮注入的轮次卡为准");
-		assert.ok(p.includes("重新评估"), "写完后评估（ask/重拟/seal）");
-		for (const tool of ["writing_guide", "draft_write", "lorebook_search"]) {
-			assert.ok(!p.includes(tool), `不把无关工具写进工作流 ${tool}`);
-		}
-	}
+test("system prompt：marker 归位——预设声明过的槽位，梨园不再按自己版式重出一遍", () => {
+	const rich = { ...card, description: "云澜是师姐。", personality: "冷。", scenario: "山门外。" };
+	const declared = buildStageSystemPrompt({
+		card: rich,
+		config,
+		constantLore: [],
+		presetBefore: ["【预设槽位里的卡描述】云澜是师姐。"],
+		declaredMarkers: new Set(["charDescription", "charPersonality", "personaDescription"]),
+	});
+	assert.ok(!declared.includes("# 用户扮演："), "personaDescription 已归位，兜底不再出");
+	assert.ok(!declared.includes("## 性格"), "charPersonality 已归位");
+	assert.ok(declared.includes("## 当前场景"), "scenario 没被声明 → 梨园兜底补上，卡内容不丢");
+
+	const none = buildStageSystemPrompt({ card: rich, config, constantLore: [], presetBefore: ["旧格式预设无 marker。"] });
+	assert.ok(none.includes("# 你扮演的角色：云澜") && none.includes("云澜是师姐。"), "一个槽位都没声明时全走兜底版式");
+	assert.ok(none.includes("# 用户扮演："), "人设兜底在场");
 });
 
-test("末端注入：世界状态最前、导演备注最后、拆层归拢节各就位、语言自愈", () => {
+test("末端注入：事实块——数据带标注送达，语义归 system；导演备注容器解散（D5/D6/D7）", () => {
 	const inj = buildStageInjection({
 		state: defaultState(),
 		activatedLore: [],
-		card,
+		card: { ...card, postHistoryInstructions: "卡作者的末端叮嘱。" },
 		config,
-		presetTail: {
-			aBlocks: [{ id: "a", content: "末端破限原文", channel: "postHistory", enabled: true }],
-			styleTexts: ["末端文风要点"],
-			boundaryTexts: ["末端行为边界"],
-		},
+		presetTail: ["末端破限原文", "末端文风要点", "末端行为边界"],
 		languageMismatch: true,
 	});
-	assert.ok(inj.startsWith("【世界状态】"));
-	assert.ok(inj.trimEnd().includes("【导演备注】"));
-	assert.ok(inj.indexOf("【导演备注】") > inj.indexOf("【预设末端指令】"));
-	assert.ok(inj.includes("末端破限原文"), "A 类原文在【预设末端指令】");
-	assert.ok(inj.includes("末端文风要点") && inj.includes("【文风与写法】"), "B 类归拢节");
-	assert.ok(inj.includes("末端行为边界") && inj.includes("【行为边界】"), "C 类归拢节");
-	assert.ok(inj.includes("错误的语言"), "语言自愈提醒");
+	assert.ok(inj.startsWith("【世界状态】\n"), "世界状态最前，纯数据无解说");
+	assert.ok(!inj.includes("正文不得与之矛盾"), "语义解说不再逐拍复述（在 system 语义表）");
+	assert.ok(inj.includes("【预设末端指令】"), "预设末端原文直通");
+	const at = (t: string) => inj.indexOf(t);
+	assert.ok(at("末端破限原文") < at("末端文风要点") && at("末端文风要点") < at("末端行为边界"), "原序保持");
+	assert.ok(!inj.includes("【文风与写法】") && !inj.includes("【行为边界】"), "零归拢");
+	assert.ok(inj.includes("【卡作者末端指令】\n卡作者的末端叮嘱。"), "卡末端指令独立成块（D5）");
+	assert.ok(!inj.includes("【导演备注】"), "D5：导演备注容器解散");
+	assert.ok(!inj.includes("【状态栏】"), "D6：状态栏注入块已删（谢幕注入替代）");
+	assert.ok(!inj.includes("【思考的用法】"), "D7：rehearsalGuard 注入整体删除");
+	assert.ok(inj.includes("【语言】以中文写叙事与对白（专有名词可保留原文）。"), "语言一行（config 事实）");
+	assert.ok(!inj.includes("演完本拍即停"), "「演完即停」句删——时序由判定/谢幕日程表达");
+	assert.ok(inj.includes("【语言纠正】"), "语言自愈事实保留");
 	assert.ok(!inj.includes("【登场名录】"), "无名录不出块");
 });
 
-test("末端注入：wordRange 是背景信息，不带验收暗示（8/08 定案：目标可持有，不当考试）", () => {
+test("末端注入：字数一行纯事实（§2.2）；无目标不出行", () => {
 	const inj = buildStageInjection({
 		state: defaultState(),
 		activatedLore: [],
 		card,
 		config,
-		presetActive: true,
 		wordRange: { min: 500, max: 800 },
 	});
-	assert.ok(inj.includes("500–800 字"), "篇幅信息仍在场——目标本身不是病");
-	assert.ok(inj.includes("心里有数即可"), "口径是背景信息");
-	// 「由验收器核验 / 朝这个量落笔」把篇幅变成落笔前要对准的考试：8/08 实弹里模型
-	// 逐字引用这一行后当场脑内写完整篇初稿（13587 字思考）。这类措辞不得回归。
-	assert.ok(!inj.includes("验收器核验"), "不把篇幅说成待通过的验收");
-	assert.ok(!inj.includes("朝这个量落笔"), "不要求落笔前对准总量");
-	// 末尾权重留给真纪律（语言/主权/状态栏），篇幅不占最后一句
-	const tail = inj.slice(inj.lastIndexOf("【导演备注】"));
-	assert.ok(!tail.trimEnd().endsWith("心里有数即可，不必核算。"), "篇幅不是导演备注的最后一句");
+	assert.ok(inj.includes("本拍约 500–800 字"), "字数事实在场");
+	assert.ok(!inj.includes("心里有数") && !inj.includes("朝这个量落笔") && !inj.includes("不必核算"), "纯事实，无落笔指令");
+	const none = buildStageInjection({ state: defaultState(), activatedLore: [], card, config });
+	assert.ok(!none.includes("本拍约"), "无目标不出行");
+	assert.ok(!none.includes("800–1500"), "无预设兜底数字随 D1 迁出（默认预设数据承接）");
 });
 
 test("detectsLanguageMismatch：中文目标才判、样本要够长", () => {
@@ -295,22 +368,22 @@ test("loadStageMaterials：卡+预设宏求值+postHistory 每拍求值", () => 
 		const m = loadStageMaterials(cwd);
 		assert.equal(m.card.name, "云澜");
 		assert.equal(m.presetActive, true);
-		assert.equal(m.splitTable, null, "非内置预设走四类兜底");
-		assert.equal(m.presetResidentB.length, 1, "文风类兜底入常驻 B");
-		assert.ok(m.presetResidentB[0].includes("文风基调：清冷"), "setvar/getvar 链在 system 块内生效");
+		assert.equal(m.presetDoc?.kind, "rp", "旧梨园格式仍能读");
+		assert.equal(m.presetBefore.length, 1, "启用块全量进历史前段（不再拆层退场）");
+		assert.ok(m.presetBefore[0].text.includes("文风基调：清冷"), "setvar/getvar 链跨块生效");
 		assert.equal(m.macroWarnings.length, 0);
 		assert.equal(constantLoreOf(m).length, 0);
 
-		const ph = evalPostHistoryBlocks(m, "我上前行礼。") ?? [];
+		const ph = assemblePresetAfter(m, "我上前行礼。") ?? [];
 		assert.equal(ph.length, 1);
-		assert.ok(ph[0].content.includes("回应「我上前行礼。」"), "lastusermessage 宏用本拍原文");
-		assert.ok(ph[0].content.includes("保持清冷"), "postHistory 继承 system 块变量表");
+		assert.ok(ph[0].text.includes("回应「我上前行礼。」"), "lastusermessage 宏用本拍原文");
+		assert.ok(ph[0].text.includes("保持清冷"), "历史后段照样看得到前面块设的变量");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
 
-test("loadStageMaterials：纪律块撤出写作上下文（R7）——system prompt 不见禁词表，规则/纪律单独可取", () => {
+test("loadStageMaterials：启用块全量进提示词——拆层退场后不再有块被偷偷扔掉", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "liyuan-pol-"));
 	try {
 		writeFileSync(join(cwd, "card.json"), JSON.stringify({ data: { name: "云澜", first_mes: "你来了。" } }));
@@ -331,66 +404,63 @@ test("loadStageMaterials：纪律块撤出写作上下文（R7）——system pr
 		mkdirSync(join(cwd, ".liyuan"), { recursive: true });
 
 		const m = loadStageMaterials(cwd);
-		assert.equal(m.presetResidentB.length, 1, "常驻 B 只剩文风");
-		assert.ok(m.presetResidentB[0].includes("文风"));
-		assert.equal(m.presetResidentB.join("").includes("词汇黑名单"), false, "纪律块不进常驻（rules-only）");
-		assert.equal(m.presetRuleTexts.length, 2, "规则提取仍看全量");
+		assert.equal(m.presetBefore.length, 2, "两块都在——用户开着的块一个不扔");
+		assert.equal(m.presetRuleTexts.length, 2, "规则提取看全量");
 
 		const sp = buildStageSystemPrompt({
 			card: m.card,
 			config: m.config,
 			constantLore: [],
-			presetResident: {
-				aBlocks: m.presetResidentA,
-				styleTexts: m.presetResidentB,
-				boundaryTexts: m.presetResidentC,
-			},
-			presetActive: m.presetActive,
-			statusBarFormats: m.statusBarFormats,
+			presetBefore: m.presetBefore.map((p) => p.text),
+			declaredMarkers: m.declaredMarkers,
 		});
-		assert.ok(sp.includes("文风：冷而克制"), "写作块在场");
-		assert.ok(!sp.includes("词汇黑名单"), "纪律细则不进写作上下文");
+		assert.ok(sp.includes("文风：冷而克制"), "文风块在场");
+		assert.ok(sp.includes("词汇黑名单"), "纪律块也在场——判死改判归用户，梨园不代劳");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
 
-// ---------------- M4.5 给排练断粮（慢因 A） ----------------
+test("默认预设（§4.A）：config.preset 空 → 装 presets/默认.json；用户预设在场完全不装", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "liyuan-def-"));
+	try {
+		writeFileSync(join(cwd, "card.json"), JSON.stringify({ data: { name: "云澜", first_mes: "你来了。" } }));
+		writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "card.json", userName: "沈舟" }));
+		mkdirSync(join(cwd, "presets"), { recursive: true });
+		// 用仓库真身（数据发行件）——验的是「随包发行的那份」能被装载
+		const real = readFileSync(join(process.cwd(), "presets", "默认.json"), "utf8");
+		writeFileSync(join(cwd, "presets", "默认.json"), real);
 
-const injOpts = (over: Record<string, unknown> = {}) => ({
-	state: defaultState(),
-	activatedLore: [],
-	card: { name: "云澜" } as never,
-	config: { ...DEFAULT_CONFIG, userName: "沈舟" } as RpConfig,
-	...over,
+		const m = loadStageMaterials(cwd);
+		assert.equal(m.presetDoc?.name, "默认", "默认预设装载");
+		assert.equal(m.presetActive, true, "presetActive 恒真（§4.A）");
+		const resident = m.presetBefore.map((p) => p.text).join("\n");
+		assert.ok(resident.includes("绝不替 沈舟"), "主权兜底由默认预设承接（宏已求值）");
+		assert.ok(resident.includes("斜体"), "视角/排版承接");
+		assert.ok(resident.includes("感官细节"), "感官承接");
+		assert.ok(resident.includes("忌 AI 腔"), "忌AI腔承接");
+		// 篇幅兜底数据化：extractDraftRules 能从默认预设提出 wordRange
+		const rules = extractDraftRules(m.presetRuleTexts);
+		assert.deepEqual(rules.wordRange, { min: 800, max: 1500 }, "篇幅从默认预设提取");
+
+		// 用户预设在场：默认预设完全不装（不叠加）
+		writeFileSync(
+			join(cwd, "preset.json"),
+			JSON.stringify({ name: "用户预设", samplers: {}, blocks: [{ id: "u1", channel: "system", enabled: true, content: "用户自己的文风。" }] }),
+		);
+		writeFileSync(
+			join(cwd, "liyuan.config.json"),
+			JSON.stringify({ card: "card.json", preset: "preset.json", userName: "沈舟" }),
+		);
+		const m2 = loadStageMaterials(cwd);
+		assert.equal(m2.presetDoc?.name, "preset", "预设名取文件名，不取文件里写的 name");
+		assert.ok(!m2.presetBefore.map((p) => p.text).join("").includes("绝不替"), "默认预设零叠加");
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
 });
 
-test("断粮注入：明示思考只用于读题与决定，且点名 harness 已接管事后核查", () => {
-	const text = buildStageInjection(injOpts({ rehearsalGuard: true }) as never);
-	assert.ok(text.includes("【思考的用法】"), "断粮条目在场");
-	assert.ok(/不要在思考里起草|预写/.test(text), "禁止在思考里起草正文");
-	assert.ok(/不要在思考里逐条复核|程序化核验/.test(text), "明示验算已归 harness");
-	// 位置：必须落在末端【导演备注】里（上下文末尾权重最大）
-	assert.ok(text.lastIndexOf("【思考的用法】") > text.lastIndexOf("【世界状态】"), "断粮在导演备注段");
-});
-
-test("断粮注入：不点名规划区标签——draft_notes 格式栈已随拆层退场（M-C）", () => {
-	const without = buildStageInjection(injOpts({ rehearsalGuard: true }) as never);
-	assert.ok(!without.includes("draft_notes"), "任何情况下都不点名格式栈标签（8/02 <user> 块事故同理）");
-});
-
-test("断粮注入：默认不注入，显式开启才注入", () => {
-	// 默认（无 rehearsalGuard 字段）= 不注入（buildStageInjection 层面；
-	// 引擎侧 P14 已改为默认开，config.rehearsalGuard !== false）
-	const defaultInj = buildStageInjection(injOpts() as never);
-	assert.ok(!defaultInj.includes("【思考的用法】"), "默认不注入");
-
-	// 显式 true 才注入
-	const on = buildStageInjection(injOpts({ rehearsalGuard: true }) as never);
-	assert.ok(on.includes("【思考的用法】"), "显式开启才注入");
-});
-
-test("句级过滤接线：写作块摘掉验算行，规则提取仍看未过滤原文", () => {
+test("预设原文直通：句级过滤退场，验算行也照进提示词", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "liyuan-audit-"));
 	try {
 		writeFileSync(join(cwd, "card.json"), JSON.stringify({ data: { name: "云澜", description: "师姐" } }));
@@ -423,13 +493,11 @@ test("句级过滤接线：写作块摘掉验算行，规则提取仍看未过�
 		writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "card.json", preset: "preset.json" }));
 
 		const m = loadStageMaterials(cwd);
-		const writing = m.presetResidentB.join("\n");
-		assert.ok(writing.includes("以直接对白为主"), "文风指令留在写作台上");
-		assert.ok(!writing.includes("自检"), "验算指令已摘出写作上下文");
-		assert.equal(m.auditLinesDropped, 1, "摘行数可观测");
+		const writing = m.presetBefore.map((p) => p.text).join("\n");
+		assert.ok(writing.includes("以直接对白为主"), "文风指令原文直通");
+		assert.ok(writing.includes("自检"), "句级过滤已退场——预设作者写的每一行都照进提示词（铁律一）");
 
-		// 规则提取看的是未过滤原文（字数规则不能因过滤而丢）
-		assert.ok(m.presetRuleTexts.join("\n").includes("自检"), "规则提取源保留全文");
+		// 规则提取看的是同一份原文（字数规则照旧提得出）
 		assert.ok(m.presetRuleTexts.join("\n").includes("800-1200"));
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });

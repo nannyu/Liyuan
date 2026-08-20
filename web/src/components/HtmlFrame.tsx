@@ -6,10 +6,10 @@
  * - seamless=true：无痕模式（卡皮肤/整楼界面）——幽灵操作、真实高度、样式主权
  * - 与侧栏 ArtifactPanel 锁死策略不同：此处按消息/工具显式开关脚本，服务「中途渲染 UI」
  *
- * 视口接管型程序卡（凡人修仙、道渊开局创建器等）UI 是 fixed/100% 铺满。
+ * 视口接管型程序卡（某卡、某卡开局创建器等）UI 是 fixed/100% 铺满。
  * 若初始 iframe 只有 minHeight(120)，量高永远量出 120 → 按钮被裁切在框外 → 用户感觉「点了没反应」。
  * 接管型：按视口锁高、不注入上报器、不收内容量高消息——内容量高与卡内
- * ResizeObserver 互踩会形成「收拢/涨高」乒乓（道渊开局创建器持续抖动事故）。
+ * ResizeObserver 互踩会形成「收拢/涨高」乒乓（某卡开局创建器持续抖动事故）。
  */
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -40,13 +40,13 @@ export function HtmlFrame({
 		programApp && typeof window !== "undefined" ? programViewportHeight(window) : minHeight,
 	);
 	const [showSource, setShowSource] = useState(false);
-	const srcDoc = buildSrcDoc(html, scripts, seamless);
+	const srcDoc = buildSrcDoc(html, scripts, seamless, typeof window !== "undefined" ? window.innerHeight : undefined);
 	/**
 	 * 沙箱矩阵：
 	 * - 静态 seamless：only same-origin（量高，无脚本）
 	 * - 脚本帧（三档程序卡）：scripts + same-origin + forms
 	 *   必须同源，否则 IndexedDB/Dexie/localStorage 在不透明源上 SecurityError，
-	 *   卡初始化挂掉 → 按钮永远绑不上（凡人修仙等）。
+	 *   卡初始化挂掉 → 按钮永远绑不上（某卡等）。
 	 *   风险：同源脚本可读父页 DOM——仅对卡作者 HTML 开启；垫片不提供改正文通道。
 	 * - agent show_html 非 seamless 脚本：仅 scripts（调试用，保持隔离）
 	 */
@@ -119,7 +119,7 @@ export function HtmlFrame({
 			}
 			const raw = Math.ceil(d.liyuanFrameHeight);
 			// 内容流帧（seamless 非接管型）高度上限：大方放行，蠕变靠下方 ratchet 防护。
-			// 旧值 min(2400, 92%vh) 在 1080p 只有 ~828px，道渊等长欢迎消息被裁半截。
+			// 旧值 min(2400, 92%vh) 在 1080p 只有 ~828px，某卡等长欢迎消息被裁半截。
 			const hardCap = typeof window !== "undefined"
 				? Math.max(2400, Math.floor(window.innerHeight * 4))
 				: 10000;

@@ -78,3 +78,28 @@ test("isFullInterface: 整条消息即界面", () => {
 	assert.equal(isFullInterface("正文\n<div>局部</div>"), false);
 	assert.equal(isFullInterface("纯正文"), false);
 });
+
+test("splitHtmlParts: 裸整份文档带【开场】前缀——整份进一帧，不被切碎", () => {
+	// 梨园自己给开场白加「【开场 · 卡名】\n」(greeting.ts:16)。围栏那条判据一直容忍这个前缀，
+	// 裸文档这条原先要求文档落在第 0 位 → 整份文档被按顶层元素切成一堆碎帧（v1.4.1 实锤）。
+	const doc = '<html>\n<style>\n.gj-wrap{color:#fff}\n</style>\n<div class="gj-wrap"><p>一</p></div>\n<div class="gj-nav">二</div>\n</html>';
+	const p = splitHtmlParts(`【开场 · 某卡】\n${doc}`);
+	assert.equal(p.length, 2, "前缀一段文本 + 文档一帧");
+	assert.equal(p[0].kind, "text");
+	assert.equal(p[1].kind, "html");
+	assert.ok(p[1].kind === "html" && p[1].html.includes("<style>"), "<style> 留在帧内");
+	assert.ok(p[1].kind === "html" && p[1].html.includes("gj-nav"), "文档尾部也在同一帧里");
+});
+
+test("splitHtmlParts: 前缀 + 裸文档 + 文档后的内容——文档一帧，尾巴照常另行认领", () => {
+	const doc = "<!doctype html>\n<html><body><p>页</p></body></html>";
+	const p = splitHtmlParts(`【开场 · 某卡】\n${doc}\n\n收尾叙事一句。`);
+	assert.equal(p.filter((x) => x.kind === "html").length, 1, "只认一份文档");
+	const tail = p[p.length - 1];
+	assert.equal(tail.kind, "text");
+	assert.ok(tail.kind === "text" && tail.text.includes("收尾叙事"), "文档之后的文本不被卷进帧");
+});
+
+test("looksLikeHtmlDocument: 带前缀时仍为 false（前缀容忍只做在 splitHtmlParts 里）", () => {
+	assert.equal(looksLikeHtmlDocument("【开场 · 某卡】\n<html><body>x</body></html>"), false);
+});

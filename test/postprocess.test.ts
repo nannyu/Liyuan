@@ -13,7 +13,7 @@ import {
 	resetDisplayTagExtras,
 } from "../src/postprocess.ts";
 
-test("结构块：分析 fold 删除，状态 panel 送模删除，plot unwrap 留正文", () => {
+test("结构块：分析 fold 删除，状态/plot unwrap 留正文（状态栏渲染归作者正则，非名单）", () => {
 	const raw = `<descriptive_analysis>
 1. 意图分析…
 2. 好感8（陌路之人阶段）
@@ -33,12 +33,13 @@ test("结构块：分析 fold 删除，状态 panel 送模删除，plot unwrap �
 
 </plot>`;
 	const out = cleanAssistantText(raw);
-	assert.ok(!out.includes("descriptive_analysis"));
+	assert.ok(!out.includes("descriptive_analysis"), "分析块 fold：整块删");
 	assert.ok(!out.includes("意图分析"));
-	assert.ok(!out.includes("normal_status"));
-	assert.ok(!out.includes("『时间』"));
-	assert.ok(!out.includes("<plot>"));
-	assert.ok(out.startsWith("*她咬了一口葱油饼"), "plot 内容应保留且顶格");
+	// normal_status 不再是 panel：标签 unwrap 剥掉，内容按正文留（送模历史里作者的
+	// promptOnly 正则本会剥它——但那条通道尚未接，此处内容留在历史是已知遗留）
+	assert.ok(!out.includes("<normal_status>"), "状态标签本身剥掉");
+	assert.ok(!out.includes("<plot>"), "plot 标签剥掉");
+	assert.ok(out.includes("*她咬了一口葱油饼"), "plot 内容保留");
 	assert.ok(out.includes("「短剑在你自己的行囊里。」"));
 });
 
@@ -47,7 +48,7 @@ test("悬挂开标签剥到末尾；无结构块的文本只做空白收敛", ()
 	assert.equal(cleanAssistantText("行尾空白   \n\n\n\n下一段。"), "行尾空白\n\n下一段。");
 });
 
-test("displayAssistantText：假思维链隐去，状态栏保留，未知标签 unwrap", () => {
+test("displayAssistantText：假思维链隐去，状态栏标签 unwrap 留内容，未知标签 unwrap", () => {
 	const raw = `<draft_notes>
 本轮分析：用户要润墨
 </draft_notes>
@@ -73,8 +74,9 @@ test("displayAssistantText：假思维链隐去，状态栏保留，未知标签
 	assert.ok(!out.includes("</content>"));
 	assert.ok(!out.includes("Prism"), "HTML 注释应隐去");
 	assert.ok(!out.includes("### 正文"), "分隔标题应隐去");
-	assert.ok(out.includes("<StatusBlock>"), "状态栏保留给前端面板");
-	assert.ok(out.includes("地点:御书房"));
+	// StatusBlock 不再是 panel：标签剥掉、内容留正文（作者写了正则才会渲染成界面）
+	assert.ok(!out.includes("<StatusBlock>"), "状态栏标签剥掉，不再保留给梨园面板");
+	assert.ok(out.includes("地点:御书房"), "状态栏内容作为正文保留");
 	assert.ok(out.includes("文舒婉听话了"));
 	assert.ok(out.includes("她拿起墨条"));
 });
@@ -92,8 +94,9 @@ test("未知标签默认 unwrap：内容渲染、标签消失（不必预先登�
 test("classifyTag：模式分类，不靠精确名单", () => {
 	assert.equal(classifyTag("thinking"), "fold");
 	assert.equal(classifyTag("My_Custom_Thought"), "unwrap"); // 不像思考
-	assert.equal(classifyTag("StatusBlock"), "panel");
-	assert.equal(classifyTag("normal_status"), "panel");
+	assert.equal(classifyTag("StatusBlock"), "unwrap"); // 状态栏不再是 panel——渲染归作者正则
+	assert.equal(classifyTag("normal_status"), "unwrap");
+	assert.equal(classifyTag("state1"), "unwrap");
 	assert.equal(classifyTag("haurki准则"), "strip");
 	assert.equal(classifyTag("content"), "unwrap");
 	assert.equal(classifyTag("正文"), "unwrap");
@@ -159,12 +162,13 @@ test("状态栏 body 内 summary 等标签 unwrap，围栏保留", () => {
 	assert.ok(out.includes("互动角色"));
 });
 
-test("prepareDisplayText: 先皮肤再策略——state 标记不被 unwrap 拆掉", () => {
+test("prepareDisplayText: 先皮肤再策略——有正则的 state 标记不被 unwrap 抢先拆掉", () => {
 	const raw = `叙事一句。\n\n<state1>\n时间: 清晨\n地点: 街道\n</state1>`;
-	// 无皮肤：unwrap 掉 state1
+	// 无作者正则：state1 是未识别标签 → unwrap 剥壳留内容（对齐酒馆 DOMPurify）。
+	// 状态栏成不成界面，取决于作者写没写正则，不取决于梨园的标签名单。
 	const plain = prepareDisplayText(raw, null);
-	assert.ok(!plain.includes("<state1>"));
-	assert.ok(plain.includes("时间: 清晨"));
+	assert.ok(!plain.includes("<state1>"), "无正则时标签剥掉");
+	assert.ok(plain.includes("时间: 清晨"), "内容作为正文保留");
 
 	// 有皮肤：先换成围栏 HTML，再跳过 unwrap
 	const skin = {
@@ -227,4 +231,25 @@ test("prepareDisplayText: 开场前缀+占位符经皮肤成围栏文档", () =>
 	assert.ok(isHtmlDisplayPayload(out));
 	assert.ok(out.includes("性别"));
 	assert.ok(out.includes("【开场"));
+});
+
+test("prepareDisplayText: 裸整份文档带【开场】前缀——原样交出，<style> 不被 unwrap 剥掉", () => {
+	// v1.4.1 实锤（用户反馈截图）：卡的开场白是一份裸 <html> 文档（无 doctype、无围栏），
+	// 梨园自己加的「【开场 · 卡名】\n」前缀把「裸整页」判据顶掉（它要求文档落在第 0 位），
+	// 于是整页被判成普通正文 → <style> 壳被剥、CSS 当正文上屏、容器标签也被剥。
+	const doc = '<html>\n<style>\n.gj-wrap{color:#fff}\n</style>\n<div class="gj-wrap">图鉴</div>\n</html>';
+	const out = prepareDisplayText(`【开场 · 某卡】\n${doc}`, null);
+	assert.ok(out.includes("<style>"), "<style> 标签必须留着（被剥就会变成 CSS 裸奔上屏）");
+	assert.ok(out.includes('class="gj-wrap"'), "容器标签留着");
+	assert.ok(out.includes("【开场 · 某卡】"), "前缀本身仍在");
+});
+
+test("prepareDisplayText: 裸整份文档 + 文档外的过滤照常执行", () => {
+	// 整页保护是「把文档整段占位、过滤完再还原」，不是「整条消息跳过过滤」：
+	// 文档之外的 thinking 之类仍须被滤掉，否则一张带整页开场白的卡会连思考块一起上屏。
+	const doc = "<!doctype html>\n<html><body><p>页</p></body></html>";
+	const out = prepareDisplayText(`【开场 · 某卡】\n${doc}\n\n<thinking>内部盘算</thinking>\n收尾。`, null);
+	assert.ok(out.includes("<p>页</p>"), "文档内容完好");
+	assert.ok(!out.includes("内部盘算"), "文档之外的 thinking 仍被滤掉");
+	assert.ok(out.includes("收尾。"), "文档之外的正文保留");
 });

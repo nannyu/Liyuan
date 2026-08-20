@@ -15,8 +15,7 @@ import type { ExtensionAPI } from "@liyuan/agent-runtime";
 import { completeSimple } from "@liyuan/ai/compat";
 import { Type } from "typebox";
 
-import { loadCardFile, readCardRawJson } from "../../src/card.ts";
-import { cardStatusBarFormats } from "../../src/cardfront.ts";
+import { loadCardFile } from "../../src/card.ts";
 import { buildImportBlock, cleanChat, DEFAULT_STRIP_TAGS, parseStChat, serializeForImportSummary } from "../../src/chatlog.ts";
 import { findCommand } from "../../src/commands.ts";
 import {
@@ -30,7 +29,6 @@ import {
 import { buildGreeting } from "../../src/greeting.ts";
 import { memoryArchiveCompacted, memoryRecallForTurn, memorySearch } from "../../src/memory/index.ts";
 import { GATED_TOOLS, WRITE_REQUEST_RE } from "../../src/tools/gate.ts";
-import { createMacroEnv, evalPresetMacros } from "../../src/preset-macro.ts";
 import {
 	constantEntries,
 	appendOverlayEntry,
@@ -62,7 +60,7 @@ import {
 	type PanelMap,
 } from "../../src/panels.ts";
 import { runAssistantTask } from "../../src/assistant-gateway.ts";
-import { enabledBlocks, normalizeRpPreset, type RpPreset } from "../../src/preset.ts";
+import { normalizeRpPreset, type RpPreset } from "../../src/preset.ts";
 import { applyProjectedSamplers } from "../../src/samplers.ts";
 import { registerStoryPanelSync, registerStoryStateSync } from "../../src/story-sync.ts";
 import { formatPruneStats, pruneClosedTurns } from "../../src/retention.ts";
@@ -153,8 +151,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 	let config: RpConfig = { ...DEFAULT_CONFIG };
 	let card: CharacterCard | null = null;
 	let entries: LorebookEntry[] = [];
-	/** 卡作者状态栏格式（StatusBlock / state1…）；空=卡未设计，勿硬造 */
-	let statusBarFormats: string[] = [];
 	let state: WorldState = defaultState();
 	let stateFile = "";
 	// agent 自建面板（柱 2）：与 state 同一套「磁盘缓存 + 会话树快照」机制
@@ -1285,11 +1281,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			{
 				const cardAbs = resolvePath(ctx.cwd, config.card);
 				card = loadCardFile(cardAbs);
-				try {
-					statusBarFormats = cardStatusBarFormats(readCardRawJson(cardAbs).raw);
-				} catch {
-					statusBarFormats = [];
-				}
 			}
 
 			// 世界书只来自「已挂载的独立书（0..N 本）」+ agent 补充设定集；
@@ -1427,62 +1418,22 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		}
 	};
 
-	/** 用户预设启用中（任一渠道有 enabled 块）——扮演规范让位给预设的判定依据 */
-	const presetHasEnabledBlocks = () =>
-		!!preset && (enabledBlocks(preset, "system").length > 0 || enabledBlocks(preset, "postHistory").length > 0);
-
-	/** system 块求值后的变量表快照：postHistory 每轮求值时以此为初值（前块 setvar、后块 getvar） */
-	let presetVarSnapshot = new Map<string, string>();
-
-	/** system 块按序求值后的文本（新流水线装配时取用；旧 buildSystemPrompt 已删） */
-	let presetSystemBlocksEvaled: Array<{ content: string }> = [];
-
-	/** postHistory 块每轮求值：变量继承 system 块，lastusermessage 用本轮原文；全空块过滤 */
-	const evalPostHistoryBlocks = (userText: string) => {
-		if (!preset || !card) return undefined;
-		const env = createMacroEnv({ charName: card.name, userName: config.userName, userText });
-		env.vars = new Map(presetVarSnapshot);
-		const out = enabledBlocks(preset, "postHistory").map((b) => ({
-			...b,
-			content: evalPresetMacros(b.content, env).text,
-		}));
-		return out.filter((b) => b.content.trim().length > 0);
-	};
-
 	/**
 	 * 预设宏求值 + 变量表快照。
 	 *
 	 * 原先还负责拼两套 system prompt（buildSystemPrompt）——那部分随 director.ts
-	 * 整体删除（harness 重做 2026-08-02）。这里只保留预设侧能力：按序求值 system 块、
-	 * 留下 setvar 变量表、预演 postHistory 的宏支持度告警。
+	 * 整体删除（harness 重做 2026-08-02）。
+	 *
+	 * 8/15：预设侧那点残余（按序求值 system 块、留 setvar 变量表、预演 postHistory
+	 * 宏支持度）也全部退场——任务一（228057b）把预设装配整体搬进 src/preset-assemble.ts，
+	 * 跨块 setvar/getvar 由装配器负责，本处的求值产物已无任何消费者
+	 * （presetSystemBlocksEvaled 只写不读；presetHasEnabledBlocks / evalPostHistoryBlocks
+	 * 定义完零调用）。它们唯一还在做的事是调用 `enabledBlocks`——那个函数同在 228057b
+	 * 被删，于是每次热更新必抛 `_preset.enabledBlocks is not a function`。删掉即修复。
 	 */
 	const rebuildSystemPrompts = (_cwd: string) => {
 		if (!card) return;
 		refreshDisplayTagExtras();
-		// 预设宏求值：system 块按序求值并留下变量表；顺带预演 postHistory 汇总清单外宏（显式降级告警）
-		const macroEnv = createMacroEnv({ charName: card.name, userName: config.userName });
-		const unsupported = new Set<string>();
-		const evaledSystemBlocks = (preset ? enabledBlocks(preset, "system") : []).map((b) => {
-			const r = evalPresetMacros(b.content, macroEnv);
-			for (const u of r.unsupported) unsupported.add(u);
-			return { ...b, content: r.text };
-		});
-		presetVarSnapshot = new Map(macroEnv.vars);
-		if (preset) {
-			const probe = createMacroEnv({ charName: card.name, userName: config.userName, userText: "" });
-			probe.vars = new Map(presetVarSnapshot);
-			for (const b of enabledBlocks(preset, "postHistory")) {
-				for (const u of evalPresetMacros(b.content, probe).unsupported) unsupported.add(u);
-			}
-		}
-		if (unsupported.size > 0) {
-			console.warn(
-				`[preset-macro] 预设含 ${unsupported.size} 个不支持的宏（已从送模文本剥除）：${[...unsupported].join("、")}`,
-			);
-		}
-		const nonEmptySystemBlocks = evaledSystemBlocks.filter((b) => b.content.trim().length > 0);
-		// 求值后的 system 块留给新流水线取用（旧的 buildSystemPrompt 装配已删）
-		presetSystemBlocksEvaled = nonEmptySystemBlocks;
 	};
 
 	// ============================================================
@@ -2004,11 +1955,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		{
 			const cardAbs = resolvePath(cwd, config.card);
 			card = loadCardFile(cardAbs);
-			try {
-				statusBarFormats = cardStatusBarFormats(readCardRawJson(cardAbs).raw);
-			} catch {
-				statusBarFormats = [];
-			}
 		}
 		const fileGroups: LorebookEntry[][] = [];
 		for (const rel of mountedLorebookPaths(config)) {

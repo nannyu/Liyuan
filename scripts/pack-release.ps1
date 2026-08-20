@@ -1,4 +1,4 @@
-# Pack Liyuan release kits (Windows + Linux + macOS)
+﻿# Pack Liyuan release kits (Windows + Linux + macOS)
 # - No node_modules (small zip; first-run npm install)
 # - Prebuilt web/dist so no frontend toolchain required on first start
 # - No personal configs / private cards / runtime data
@@ -174,6 +174,7 @@ function Stage-Clean {
     "node_modules",
     ".git",
     ".github",
+    ".claude",
     ".liyuan", ".liyuan-artifacts", ".liyuan-assistant", ".liyuan-cache", ".liyuan-codex",
     ".liyuan-lore", ".liyuan-media", ".liyuan-memory", ".liyuan-skills", ".liyuan-state",
     ".liyuan-uploads", ".liyuan-audio", ".liyuan-worldline", ".liyuan-jobs",
@@ -266,6 +267,7 @@ function Stage-Clean {
     # root-level dev scratch (underscore convention) + probe dumps
     "_*",
     "TESTING.md",
+    "CLAUDE.md",
     "docs\st-ux-inventory.md",
     "docs\superpowers",
     # 内部架构设计文档：研发过程记录（含逆向分析路径、未修问题定位、
@@ -273,7 +275,10 @@ function Stage-Clean {
     "docs\PLAN-*.md",
     "docs\REVIEW-*.md",
     "docs\DRAFT-*.md",
-    "docs\PRESET-SPLIT-TAXONOMY.md"
+    "docs\PRESET-SPLIT-TAXONOMY.md",
+    # 内部文档（含本地绝对路径/会话定位，仅仓库可见）+ 预设装载期生成物（用户数据）
+    "docs\READING-THINKING.md",
+    "skills\预设-*"
   )
   foreach ($g in $dropGlobs) {
     $p = Join-Path $dest $g
@@ -336,6 +341,18 @@ with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compressle
             if abs_p.name in exec_names:
                 zi.external_attr = 0o755 << 16
             zf.writestr(zi, abs_p.read_bytes())
+        # Preserve empty dirs (assets/lorebooks ends up empty after lorebooks are
+        # stripped) — the Docker build context runs `cp -r assets/lorebooks`, which
+        # fails when the directory is absent; zip has no dir entries unless added here.
+        for d in dirs:
+            abs_d = Path(root) / d
+            if not any(abs_d.iterdir()):
+                rel = Path('Liyuan') / abs_d.relative_to(stage)
+                zi = zipfile.ZipInfo(rel.as_posix() + '/')
+                zi.flag_bits |= 0x800
+                zi.compress_type = zipfile.ZIP_DEFLATED
+                zi.external_attr = 0o755 << 16
+                zf.writestr(zi, b'')
 print(zip_path, zip_path.stat().st_size)
 "@
   $pyFile = Join-Path $env:TEMP ("liyuan-rel-zip-{0}.py" -f [guid]::NewGuid().ToString("n"))

@@ -7,7 +7,6 @@
  * - 草稿即正文本身：模型照常流式输出，不经工具参数，不牺牲流式体验；
  * - draft_edit 以「精确替换」补丁修订已写文字——补丁存为 rp-draft-op 隐藏消息，
  *   会话树只追加不改写，可回放、随变体分支走；
- * - draft_check 用程序化验收代替模型脑内自查机械项（字数/禁词/比喻/句式/模块齐全）；
  * - 显示层（server/wire toWireHistory）与送模层（roleplay context 钩子）各自套用
  *   同一份补丁函数——两侧看到同一份定稿，原始草稿仅存于会话文件。
  *
@@ -407,37 +406,15 @@ export function searchDraft(text: string, query: string, limit = 8): { hits: str
 	return { hits, total };
 }
 
-// ---------------- 程序化验收（lint for prose） ----------------
+// ---------------- 字数目标提取（数据投影，非检测） ----------------
 
 export interface DraftRules {
-	/** 正文字数区间（不含标签模块） */
+	/** 正文字数区间（不含标签模块）——目标数据，模型经预设原文持有；harness 不回传测量 */
 	wordRange?: { min: number; max: number };
-	/** 禁词表（预设「禁用词汇/黑名单」块里提取） */
-	bannedWords: string[];
-	/** 预设有比喻频率约束 */
-	metaphorRule: boolean;
-	/** 预设禁「不是…是…」先否后肯句式 */
-	banNegPos: boolean;
-	/** 必须出现的模块标签（每个都要在，如 w2g / draft_notes） */
-	requiredTags: string[];
-	/** 状态栏标签组（任一命中即可，如 StatusBlock / state1） */
-	statusBarTagGroup: string[];
 }
 
 export function emptyDraftRules(): DraftRules {
-	return { bannedWords: [], metaphorRule: false, banNegPos: false, requiredTags: [], statusBarTagGroup: [] };
-}
-
-/** 规则是否空到不值得跑核验 */
-export function rulesAreEmpty(r: DraftRules): boolean {
-	return (
-		!r.wordRange &&
-		r.bannedWords.length === 0 &&
-		!r.metaphorRule &&
-		!r.banNegPos &&
-		r.requiredTags.length === 0 &&
-		r.statusBarTagGroup.length === 0
-	);
+	return {};
 }
 
 	// 兼容三种形态：<tag>（成对）、<tag >、<tag/>（自闭合占位符——界面由卡渲染）
@@ -454,10 +431,10 @@ export function isPoliceBlock(content: string): boolean {
 	if (!content) return false;
 	if (/字数|response_length|word_count/i.test(content)) return false;
 	// 供给特征优先：语料/词库类块（给写作供词的）即便夹带禁用词小节也留在写作台上——
-	// 扣走词库=先用错词再挨个补（2026-08-02 TGbreak 瑟瑟语料实测误伤）
+	// 扣走词库=先用错词再挨个补（2026-08-02 某预设瑟瑟语料实测误伤）
 	if (/(语料|词库|多种表达|称呼：|称呼:)/.test(content)) return false;
 	if (/(禁用词|词汇黑名单|厌恶的词汇|禁词表)/.test(content)) return true;
-	// 英文键名的纪律块（双人成行「Claude 禁词表」形态：Forbidden_Expressions /
+	// 英文键名的纪律块（某预设「Claude 禁词表」形态：Forbidden_Expressions /
 	// Writing_Proscription / Forbidden_Syntax_Styles）——2026-08-03 分桶审查发现漏网
 	if (/(forbidden_(?:expressions?|syntax|words?)|writing_proscription|banned_(?:words?|phrases?))/i.test(content)) {
 		return true;
@@ -473,8 +450,8 @@ export function isPoliceBlock(content: string): boolean {
  *
  * 块级分流（isPoliceBlock）只能整块留或整块撤，可**留在写作台上的文风块里仍夹带
  * 「每段写完自检 X」这类指令**——它们是脑内验算的直接燃料：模型会为每一条在思考里
- * 把正文逐句过一遍。这些活儿 harness 已经在做（checkDraft 程序化核验 + 精修阶段
- * 带原文和违规清单定点修订），写作阶段重做一遍纯属白烧墙钟。
+ * 把正文逐句过一遍。这类验算无论谁做都是白烧墙钟
+ *（8/10 起 harness 的程序化验收也整体退役——落笔之后 harness 不对稿件说话）。
  *
  * 判定对象是**单句/单行**，只摘「写完回头查」，留「怎么写」：
  *   摘：「每段写完后自检是否出现禁用句式」「输出前逐条核对上述要求」「检查完再输出」
@@ -493,7 +470,7 @@ const AUDIT_TIMING =
 /**
  * 「读题遵循」不算验算：`$(检查并遵循<user_def>内的要求)`、`确保输出语言为…` 这类是
  * **动笔前**的读题与合规声明，摘掉等于把预设的要求本身撕了（2026-08-03 语料实测：
- * 双人成行的 draft_notes 清单大半是这个形态）。验算的定义是「对已写出的文字回头做手术」。
+ * 某预设的 draft_notes 清单大半是这个形态）。验算的定义是「对已写出的文字回头做手术」。
  */
 const COMPLY_NOT_AUDIT = /(并遵循|遵循<|要求\)|确保遵循|检查开启|是否开启|开启了冲突)/;
 
@@ -537,21 +514,36 @@ export function stripAuditLines(content: string): { text: string; dropped: numbe
 const GENERIC_TAGS = new Set(["details", "summary", "br", "div", "span", "p", "b", "i", "hr", "html", "body"]);
 /**
  * 指代性标签不算输出模块：预设叙述里常用 <user>/<char> 指"用户/角色"本人
- * （2026-08-02 实测：TGbreak 行动选项块的「选择的内容是<user>的行动」被误判成必须模块，
+ * （2026-08-02 实测：某预设行动选项块的「选择的内容是<user>的行动」被误判成必须模块，
  * 模型顺从地发明了一个 <user> 块塞进正文）。
  */
 const REFERENT_TAGS = new Set(["user", "char", "assistant", "human", "system", "player_input", "bot"]);
 
 /**
- * 从预设启用块原文 + 卡状态栏格式提取机械规则。
- * 解析不出的项就空着（checkDraft 对空项不报）——宁可漏验，不可误伤。
+ * 提示串里的模块标签名（通用 HTML 与指代性标签除外）。
+ * 规则提取（statusBarTagGroup）与输出合约 v0 生成共用**同一份**判定——不另立平行名单。
  */
-export function extractDraftRules(blockContents: string[], statusBarFormats?: string[]): DraftRules {
+export function moduleTagsInHint(hint: string): string[] {
+	const out: string[] = [];
+	for (const tm of hint.matchAll(TAG_IN_HINT_RE)) {
+		const tag = tm[1];
+		if (GENERIC_TAGS.has(tag.toLowerCase()) || REFERENT_TAGS.has(tag.toLowerCase())) continue;
+		if (!out.includes(tag)) out.push(tag);
+	}
+	return out;
+}
+
+/**
+ * 从预设启用块原文提取字数目标（数据，供末端注入的字数事实一行；不做任何检测）。
+ *
+ * 8/10 验收整体退役：禁词/比喻/句式的匹配统计连同 checkDraft 全部删除——
+ * 「匹配到 N 个词」不是验收，落笔之后 harness 不再对稿件说任何话。
+ */
+export function extractDraftRules(blockContents: string[]): DraftRules {
 	const rules = emptyDraftRules();
 
 	for (const text of blockContents) {
 		if (!text) continue;
-
 		// 字数区间：限定在明确谈正文字数的块里（含 摘要 的 200-300 等不取）
 		if (!rules.wordRange && /(正文|response_length|字数限制|字数设定|word_count)/.test(text)) {
 			const m =
@@ -565,49 +557,11 @@ export function extractDraftRules(blockContents: string[], statusBarFormats?: st
 				}
 			}
 		}
-
-		// 禁词表：只认明确的禁词块，块内取引号词
-		if (/(禁用词|词汇黑名单|厌恶的词汇|禁词表)/.test(text)) {
-			for (const qm of text.matchAll(/[“”"「]([^“”"」\n]{1,10})[“”"」]/g)) {
-				const w = qm[1].trim();
-				if (!w || w.length > 10) continue;
-				if (/[{}$]/.test(w)) continue; // 宏残留
-				if (/[…]/.test(w)) continue; // 句式示意（如 不是…是…），非字面词
-				if (!rules.bannedWords.includes(w)) rules.bannedWords.push(w);
-			}
-		}
-
-		if (!rules.metaphorRule && /比喻/.test(text) && /(频率|段落内|宁缺毋滥|比喻词不重复|只允许使用1次)/.test(text)) {
-			rules.metaphorRule = true;
-		}
-		if (!rules.banNegPos && /(不是[…….]{1,3}是|先否定[再后]?肯定)/.test(text)) {
-			rules.banNegPos = true;
-		}
-
-		// M-C 拆层后不再提取「选择框/draft_notes」类格式栈 requiredTags——预设的输出模块
-		// （w2g/catsay/draft_notes/摘要）已由 agent 工具流与账本渲染承接（PLAN-RP-AGENT-EXEC §4）：
-		// draft_check 不再逼模型手写格式块，卡状态栏组（statusBarTagGroup）仍验（卡的设计，不动）。
-	}
-
-	// 卡状态栏：任一格式命中即可
-	for (const hint of statusBarFormats ?? []) {
-		for (const tm of hint.matchAll(TAG_IN_HINT_RE)) {
-			const tag = tm[1];
-			if (GENERIC_TAGS.has(tag.toLowerCase()) || REFERENT_TAGS.has(tag.toLowerCase())) continue;
-			if (!rules.statusBarTagGroup.includes(tag)) rules.statusBarTagGroup.push(tag);
-		}
 	}
 
 	return rules;
 }
 
-export interface DraftReport {
-	violations: string[];
-	notes: string[];
-	/** 正文（剥掉标签模块后）非空白字符数 */
-	bodyChars: number;
-	pass: boolean;
-}
 
 const escapeReg = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -642,157 +596,3 @@ export function extractDraftBody(turnText: string): string {
 	return t.trim();
 }
 
-/**
- * 引号内区域抹平——只看叙述层。
- *
- * 主权检查用它（角色在对白里说「你决定吧」是合法的）；比喻词规则同样需要
- * （见 checkDraft 内的 metaphorRule）。
- */
-const stripQuotedSpans = (t: string): string =>
-	t.replace(/「[^」\n]*」|『[^』\n]*』|“[^”\n]*”|"[^"\n]*"/g, "〔对白〕");
-
-/** 机械项核验：violations=必须修；notes=提示性（不拦） */
-export function checkDraft(turnText: string, rules: DraftRules): DraftReport {
-	const violations: string[] = [];
-	const notes: string[] = [];
-	const body = extractDraftBody(turnText);
-	const bodyChars = body.replace(/\s+/g, "").length;
-
-	if (rules.wordRange) {
-		const { min, max } = rules.wordRange;
-		// 字数只作提示（note），不作违规（violation）——8/09 定案：
-		// 字数目标已由规划轮分配 + 【续写】卡兜底，封笔后不再判违规逼模型扩写
-		// （那是末端修复的诱因：封笔报「字数不足」→ 模型在稿纸里补内容）。
-		if (bodyChars < min) {
-			notes.push(`正文 ${bodyChars} 字（不含标签模块），预设建议下限 ${min}。`);
-		} else if (bodyChars > max) {
-			notes.push(`正文 ${bodyChars} 字（不含标签模块），预设建议上限 ${max}。`);
-		}
-	}
-
-	let bannedHits = 0;
-	for (const w of rules.bannedWords) {
-		let idx = body.indexOf(w);
-		while (idx !== -1) {
-			bannedHits++;
-			if (bannedHits <= 5) violations.push(`禁词「${w}」：${ctxQuote(body, idx, w.length)}`);
-			idx = body.indexOf(w, idx + w.length);
-		}
-	}
-	if (bannedHits > 5) violations.push(`（禁词共 ${bannedHits} 处，以上仅列前 5）`);
-
-	// 正文不是文档（机械格式纪律，无条件判）：行首 markdown 标题符号是结构标记不是
-	// 叙事语言——模型偶发拿 ##/### 给拟声词放大字号（8/09 实弹「### *啪……啪……*」），
-	// 渲染端按纯文本走，裸符号直接上屏。强调交给文字本身。
-	{
-		const mdHeading = /^#{1,6}\s*\S.*$/m.exec(body);
-		if (mdHeading) {
-			violations.push(
-				`正文含 markdown 标题符号「${mdHeading[0].slice(0, 24)}」——正文不是文档，删掉行首的 # 号，强调用文字本身表达。`,
-			);
-		}
-	}
-
-	if (rules.banNegPos) {
-		const m = /不是[^。！？\n]{1,24}[，,]?\s*而?是/.exec(body);
-		if (m) violations.push(`「不是…是…」句式：${ctxQuote(body, m.index, m[0].length)}`);
-	}
-
-	if (rules.metaphorRule) {
-		// 只扫叙述层：对白里的「像吗？」是人物在说话，不是作者在打比方。
-		// 8/08 实弹——自然对白被计成 5 次比喻，模型两段思考全花在跟计数搏斗上，
-		// 最后把对白改僵。可精确计数的文风判决会被当成待优化的分数（与字数螺旋同构）。
-		// 8/09 实弹二修：单字「像」误伤复合词——「摄像机」被数成比喻，模型连修 9 轮
-		// 死活找不到（验收器数的字它不该改也改不掉）；且旧报告只给计数不给位置，
-		// 模型只能盲猜。现在：复合词排除 + 每处命中给引文。
-		const narrationOnly = stripQuotedSpans(body);
-		// 复合词排除宁漏勿误：误报会把模型拖进修复循环（改不掉验收数的字），漏计
-		// 只是文风松一格。名单里不收「神/人/群/影」——「眼神像刀」「人像影子」
-		// 「人群像潮水」「背影像山」是高频叙事句式，比「神像/人像/群像/影像」值钱。
-		const METAPHOR_RE =
-			/(?<![摄录图画头塑雕肖遗想偶佛镜成显])像(?![素机片册章])|仿佛|如同|宛如|好似|犹如/g;
-		const hits = [...narrationOnly.matchAll(METAPHOR_RE)];
-		const paras = body.split(/\n\s*\n|\n/).filter((s) => s.trim().length > 0).length || 1;
-		const limit = Math.max(1, Math.ceil(paras / 5));
-		if (hits.length > limit) {
-			const quotes = hits
-				.slice(0, 5)
-				.map((m) => ctxQuote(narrationOnly, m.index ?? 0, m[0].length))
-				.join("；");
-			violations.push(
-				`比喻词 ${hits.length} 次 / ${paras} 段（预设约 5 段 1 次，上限约 ${limit}）：${quotes}——保留最必要的一处，其余改白描。`,
-			);
-		} else if (hits.length > 0) {
-			notes.push(`比喻词 ${hits.length} 次 / ${paras} 段，在限内。`);
-		}
-	}
-
-	// 末端修复已彻底删除（8/09 定案）：requiredTags / statusBarTagGroup 不再判违规——
-	// 状态栏/格式模块归**输出层**（模型最后一轮走 text 通道输出，mergeFinalText 拼接），
-	// 不属于稿纸验收项。判违规会把模型逼进「封笔后稿纸里补」的末端修复，
-	// 造成状态栏补两次、续写被未修违规拦截等连锁问题。
-	// 字段保留（rulesAreEmpty / 提取逻辑仍引用），只是不再产生 violations。
-
-	return { violations, notes, bodyChars, pass: violations.length === 0 };
-}
-
-/** 核验报告 → 回喂模型的文本 */
-/**
- * 核验报告转可读回喂。
- *
- * `showChars=false`（未封笔）时不报字数：整拍字数目标 + 每段回传实测值会闭成误差环，
- * 实弹里模型的反思整段变成「还差 19 字」的算术，不再想戏（8/08 定案）。
- * 封笔后是验收场合，读数可见无害。
- */
-export function formatDraftReport(r: DraftReport, showChars = true): string {
-	const chars = showChars ? `（正文 ${r.bodyChars} 字）` : "";
-	if (r.pass) {
-		return `核验通过${chars}。${r.notes.length ? `\n${r.notes.join("\n")}` : ""}\n机械项无违规——不要再回头自查这些；若无其他修订，直接停笔收轮。`;
-	}
-	const lines = [
-		`核验发现 ${r.violations.length} 处待修${chars}：`,
-		...r.violations.map((v, i) => `${i + 1}. ${v}`),
-		...r.notes,
-		`逐处用 draft_edit 定点替换修正（old 逐字引用现稿原文、须唯一，可一次给多处）——不要重交全文；套用后会自动复验。`,
-	];
-	return lines.join("\n");
-}
-
-// ---------------- 用户主权红线（R5 第二层不变量，规则先行） ----------------
-
-/** 命中点前若是建议/假设语气则放行（"你可以选择…"不是代做决定） */
-const SOV_GUARD_RE = /(?:可以|可|能|能否|是否|要不要|不妨|请|建议|若|如果|假如|要是|除非|万一|无论)\s*$/;
-
-/**
- * 用户主权检查：稿子是否替用户角色说话、代述内心、代做决定。
- * 精度优先——只抓恶性形态（带对白引导、内心动词、完成态决定动词），
- * 宁可漏报不可误伤；上限 6 条。动作复述（"你拱手行礼"）不在检查之列。
- */
-export function checkSovereignty(turnText: string, userName: string, charName?: string): string[] {
-	if (!userName.trim()) return [];
-	const narration = stripQuotedSpans(extractDraftBody(turnText));
-	const subj = `(?:${escapeReg(userName)}|你)`;
-	const fixHint = charName ? `改为留白或以${charName}的观察侧写` : "改为留白或从旁观察";
-	const checks: Array<{ re: RegExp; label: string }> = [
-		// 主语在前的对白引导：你说：/沈舟答道："
-		{ re: new RegExp(`${subj}[^。！？\\n听闻见觉]{0,4}(?:说|喊|答|回答|问|反问|开口)[道了]?\\s*[:：]`, "g"), label: "代写对白" },
-		// 对白在前的归属：〔对白〕你低声说。
-		{ re: new RegExp(`〔对白〕\\s*${subj}[^。！？\\n听闻见觉]{0,6}(?:说|道|答|问)`, "g"), label: "代写对白" },
-		{ re: new RegExp(`${subj}(?:心想|心中暗|暗想|暗自想|暗自道|心道|腹诽|内心(?:一|暗|翻))`, "g"), label: "代述内心" },
-		{ re: new RegExp(`${subj}(?:决定|选择|答应|同意|拒绝|默许)[了道]`, "g"), label: "代做决定" },
-	];
-	const out: string[] = [];
-	for (const c of checks) {
-		let m: RegExpExecArray | null = c.re.exec(narration);
-		while (m && out.length < 6) {
-			const before = narration.slice(Math.max(0, m.index - 8), m.index);
-			if (!SOV_GUARD_RE.test(before)) {
-				out.push(
-					`${c.label}（用户主权）：${ctxQuote(narration, m.index, m[0].length)}——${userName} 的言行与决定只能由用户书写，${fixHint}。`,
-				);
-			}
-			m = c.re.exec(narration);
-		}
-	}
-	return out;
-}

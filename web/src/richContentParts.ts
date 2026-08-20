@@ -2,13 +2,16 @@
  * 对话流正文切分（RichContent 真路径，纯函数可测）。
  *
  * 顺序纪律（spec §7 P1 + skeptic fix）：
- * 1) 卡皮肤正则先认领 StatusBlock / 开局标记等 → 卡作者 HTML
- * 2) 整页围栏 HTML 文档整段认领（Living With Slaves 等），禁止撕碎
+ * 1) 卡/预设皮肤正则先认领（applyCardSkin）→ 作者写的 HTML（状态栏/时间卡/选项栏…）
+ * 2) 整页围栏 HTML 文档整段认领（程序卡等），禁止撕碎
  * 3) 顶层标准容器 / 短 ```html 围栏切出
- * 4) 仅在剩余纯文本上再跑 splitStatusParts → 梨园统一状态卡
+ *
+ * 8/15：梨园自制「统一状态卡」（按名字抠 <state1> 画灰框）整层退场。
+ * 那是酒馆从来不做的事——酒馆没有标签名单，状态栏全靠作者正则换成标准 HTML（第 1 步）。
+ * 作者写了正则 → 这里拿到的已是 HTML；作者没写 → 标签本就该显示成裸文字（对齐酒馆）。
  *
  * **禁止二次皮肤**：wire 侧 prepareDisplayText 已应用显示正则。
- * 凡人修仙等程序卡 HTML 内仍含占位串 `lucklyjkop`，再跑会把 2.6MB 脚本再嵌一遍 →
+ * 某卡等程序卡 HTML 内仍含占位串 `lucklyjkop`，再跑会把 2.6MB 脚本再嵌一遍 →
  * `Identifier has already been declared` → 按钮全死。
  */
 
@@ -16,26 +19,12 @@ import type { DisplayRule } from "../../src/cardfront.ts";
 import { isHtmlDisplayPayload } from "../../src/postprocess.ts";
 import { applyCardSkin } from "./cardSkin.ts";
 import { findFencedHtmlDocument, looksLikeHtmlDocument, splitHtmlParts } from "./htmlEmbed.ts";
-import { splitStatusParts, stripOrphanStatusTags } from "./statusBlocks.ts";
 
 export type RichPart =
 	| { kind: "text"; text: string }
-	| { kind: "status"; tag: string; body: string }
 	| { kind: "html"; html: string; scripts: boolean };
 
 export type SkinMacros = { rules: DisplayRule[]; charName: string; userName: string };
-
-function textToRichParts(text: string): RichPart[] {
-	const out: RichPart[] = [];
-	for (const s of splitStatusParts(text)) {
-		if (s.kind === "status") {
-			out.push({ kind: "status", tag: s.tag, body: s.body });
-		} else if (s.text.trim()) {
-			out.push({ kind: "text", text: stripOrphanStatusTags(s.text) });
-		}
-	}
-	return out;
-}
 
 /** 正文是否已是皮肤/围栏产物（再套规则会二次替换） */
 function alreadyDisplayHtml(text: string): boolean {
@@ -59,7 +48,7 @@ export function splitRichContentParts(text: string, skin?: SkinMacros | null): R
 	const needSkin = Boolean(skin && skin.rules.length > 0 && !alreadyDisplayHtml(text));
 	const skinned = needSkin ? applyCardSkin(text, skin!.rules, skin!) : text;
 
-	// 围栏整页 / 多状态栏 / 短 ```html / 顶层 div —— 全由 splitHtmlParts 认领（可递归多帧）
+	// 围栏整页 / 短 ```html / 顶层 div —— 全由 splitHtmlParts 认领（可递归多帧）
 	const htmlClaimed = splitHtmlParts(skinned);
 	const out: RichPart[] = [];
 	for (const p of htmlClaimed) {
@@ -67,7 +56,7 @@ export function splitRichContentParts(text: string, skin?: SkinMacros | null): R
 			out.push({ kind: "html", html: p.html, scripts: p.scripts });
 			continue;
 		}
-		out.push(...textToRichParts(p.text));
+		if (p.text.trim()) out.push({ kind: "text", text: p.text });
 	}
 	return out;
 }

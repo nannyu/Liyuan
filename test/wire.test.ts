@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+	foldSlots,
 	foldTurnNarratives,
 	parseCardFromSessionHead,
 	summarizeToolResult,
@@ -327,6 +328,70 @@ test("toolResult 与未知类型跳过；字符串与内容块数组两种 conte
 	assert.equal(toWireMsg({ role: "bashExecution", content: "ls" }, names), null);
 	assert.equal(toWireMsg(null, names), null);
 	assert.equal(toWireMsg({ role: "user", content: [{ type: "text", text: "块数组" }] }, names)?.text, "块数组");
+});
+
+test("toWireHistory：显示侧深度限定——只有最新气泡渲染面板，旧的自动摘除", () => {
+	// Living With Slaves 实卡形态：`折叠通用多状态栏` maxDepth:2 只管最新几条，
+	// 否则每条消息都挂一个 11KB 面板，聊天记录会被面板淹没。
+	const skin = {
+		rules: [
+			{ name: "折叠状态栏", source: "<state1>([\\s\\S]*?)</state1>", flags: "g", replace: "【面板】$1", maxDepth: 0 },
+		],
+		charName: "青梧",
+		userName: "旅人",
+	};
+	const history = [
+		{ role: "user", content: "u1" },
+		{ role: "assistant", content: [{ type: "text", text: "老段。\n<state1>老栏</state1>" }] },
+		{ role: "user", content: "u2" },
+		{ role: "assistant", content: [{ type: "text", text: "新段。\n<state1>新栏</state1>" }] },
+	];
+	// 气泡 4 个：u1 depth3 / 老段 depth2 / u2 depth1 / 新段 depth0
+	const wire = toWireHistory(history, names, { skin });
+	assert.equal(wire.length, 4);
+	assert.ok(wire[3].text.includes("【面板】新栏"), "最新气泡渲染面板");
+	assert.ok(!wire[1].text.includes("【面板】"), "depth 2 超出 maxDepth:0 → 不渲染");
+	assert.ok(wire[1].text.includes("老栏"), "不渲染≠删掉：标签剥壳后内容仍在（对齐酒馆）");
+
+	// 对照：没有深度限定时逐条都渲染（改动前的行为，也是绝大多数卡的行为）
+	const flat = toWireHistory(history, names, {
+		skin: { ...skin, rules: skin.rules.map(({ maxDepth: _drop, ...r }) => r) },
+	});
+	assert.ok(flat[1].text.includes("【面板】老栏") && flat[3].text.includes("【面板】新栏"));
+});
+
+test("toWireHistory：深度按折叠后的气泡数，一拍多条 message 只算一个气泡", () => {
+	// 按原始 message 数算，本拍第一段会落到 depth 1，maxDepth:0 就渲染不出来。
+	const skin = {
+		rules: [
+			{ name: "折叠状态栏", source: "<state1>([\\s\\S]*?)</state1>", flags: "g", replace: "【面板】$1", maxDepth: 0 },
+		],
+		charName: "青梧",
+		userName: "旅人",
+	};
+	const history = [
+		{ role: "user", content: "u1" },
+		{ role: "assistant", content: [{ type: "text", text: "第一段。\n<state1>本拍栏</state1>" }] },
+		{ role: "assistant", content: [{ type: "text", text: "第二段。" }] },
+	];
+	const wire = toWireHistory(history, names, { skin });
+	assert.equal(wire.length, 2, "两条 assistant 折叠进一个气泡");
+	assert.ok(wire[1].text.includes("【面板】本拍栏"), "本拍整体 depth 0，面板必须渲染");
+	assert.ok(wire[1].text.includes("第二段"), "折叠没丢内容");
+});
+
+test("foldSlots：折叠归属与深度计数共用一份答案", () => {
+	const msgs = [
+		{ channel: "user" as const, text: "u1" },
+		{ channel: "narrative" as const, text: "a" },
+		{ channel: "image" as const, text: "", src: "/x.png" },
+		{ channel: "narrative" as const, text: "b" },
+		{ channel: "user" as const, text: "u2" },
+		{ channel: "narrative" as const, text: "c" },
+	];
+	// 插图插在中间不打断本轮角色泡归属：两条 narrative 同格
+	assert.deepEqual(foldSlots(msgs), [0, 1, 2, 1, 3, 4]);
+	assert.equal(foldTurnNarratives(msgs).length, 5, "折叠结果与归属格数一致");
 });
 
 test("toWireHistory 保序过滤", () => {

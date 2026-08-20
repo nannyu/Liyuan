@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildSrcDoc, looksLikeProgramApp, programViewportHeight } from "../web/src/frameDoc.ts";
+import { buildSrcDoc, looksLikeProgramApp, programViewportHeight, resolveViewportUnits } from "../web/src/frameDoc.ts";
 
 test("programViewportHeight: 约 78vh 且有上下限", () => {
 	assert.equal(programViewportHeight({ innerHeight: 1000 }), 780);
@@ -78,4 +78,24 @@ test("buildSrcDoc 内容流大文档:保留 height:auto 覆盖与高度上报（
 	const doc = buildSrcDoc(statusBigDoc, true, true);
 	assert.ok(doc.includes("height:auto!important"));
 	assert.ok(doc.includes("liyuanFrameHeight"));
+});
+
+test("resolveViewportUnits: 样式里的 vh 折成真视口 px，正文文字不动", () => {
+	// 折算：这是对作者本意的忠实翻译——酒馆里 vh 就是浏览器视口
+	assert.equal(resolveViewportUnits("<style>.p{max-height:76vh}</style>", 1000), "<style>.p{max-height:760px}</style>");
+	assert.equal(resolveViewportUnits("<style>.p{height:100dvh}</style>", 850), "<style>.p{height:850px}</style>");
+	assert.equal(resolveViewportUnits('<div style="max-height:50vh">x</div>', 800), '<div style="max-height:400px">x</div>');
+	// 正文里出现「76vh」这种字样不受影响（只在 <style> 与 style= 里替换）
+	assert.equal(resolveViewportUnits("<p>写 76vh 就会被裁</p>", 1000), "<p>写 76vh 就会被裁</p>");
+	// vw 不是高度单位，不碰
+	assert.equal(resolveViewportUnits("<style>.h{font-size:clamp(28px,6.5vw,44px)}</style>", 1000), "<style>.h{font-size:clamp(28px,6.5vw,44px)}</style>");
+	// 没有视口尺寸时原样返回（node 侧单测/SSR）
+	assert.equal(resolveViewportUnits("<style>.p{max-height:76vh}</style>", 0), "<style>.p{max-height:76vh}</style>");
+});
+
+test("buildSrcDoc: 静态无痕帧折 vh；脚本帧不折（走上报器/锁视口）", () => {
+	const doc = "<html><head><style>.p{max-height:76vh}</style></head><body><div>x</div></body></html>";
+	assert.ok(buildSrcDoc(doc, false, true, 1000).includes("max-height:760px"), "静态无痕帧：折算");
+	assert.ok(buildSrcDoc(doc, true, true, 1000).includes("max-height:76vh"), "脚本帧：不折");
+	assert.ok(buildSrcDoc(doc, false, true).includes("max-height:76vh"), "未给视口尺寸：不折");
 });

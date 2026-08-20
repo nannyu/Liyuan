@@ -219,3 +219,24 @@ test("splitRpInline: 全角引号“对白”着色", () => {
 test("splitRpInline: 无标记整行 plain", () => {
 	assert.deepEqual(splitRpInline("平平无奇的一行"), [{ kind: "plain", text: "平平无奇的一行" }]);
 });
+
+test("splitTextRuns: 连续行首 > 切成引用块，> 不再当字面文本", () => {
+	// 卡作者用 markdown 引用块写「导演附录」这类旁注（v1.4.1 实锤：梨园把 > 原样印出、每行各成一段）
+	const src = "上一段。\n\n> **导演附录**\n> 当前节点：失窃当夜。\n> 人物状态：睡熟。\n\n收尾。";
+	const parts = splitTextRuns(src);
+	const kinds = parts.map((p) => p.kind);
+	assert.deepEqual(kinds, ["text", "blockquote", "text"]);
+	const bq = parts[1];
+	assert.ok(bq.kind === "blockquote");
+	assert.deepEqual(bq.kind === "blockquote" ? bq.lines : [], ["**导演附录**", "当前节点：失窃当夜。", "人物状态：睡熟。"]);
+	assert.ok(!JSON.stringify(bq).includes(">"), "引用标记已剥掉");
+});
+
+test("splitTextRuns: 表格与选项列表的既有行为不被引用块判据抢走", () => {
+	const table = splitTextRuns("| 名 | 值 |\n| --- | --- |\n| a | 1 |");
+	assert.equal(table[0].kind, "table");
+	const options = splitTextRuns("A. 一\nB. 二\nC. 三");
+	assert.equal(options[0].kind, "options");
+	// 正文里句中出现的 > 不触发（判据只认行首）
+	assert.equal(splitTextRuns("他说 a > b 成立。")[0].kind, "text");
+});

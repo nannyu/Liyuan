@@ -43,7 +43,7 @@ import { loadAgentConfig, normalizeAgentConfig, syncAgentConfigToRuntime } from 
 import { streamSimple } from "@liyuan/ai/compat";
 import { loadCardFile } from "../src/card.ts";
 import { buildGreeting } from "../src/greeting.ts";
-import { StageEngine, type StageStreamFn } from "../src/stage/engine.ts";
+import { StageEngine, type AssistantMsgLike, type StageModelLike, type StageStreamFn } from "../src/stage/engine.ts";
 import { stateFromBranch, type BranchEntryLike } from "../src/stage/assemble.ts";
 import {
 	activePanels,
@@ -104,6 +104,7 @@ import {
 	assistantMediaOfToolResult,
 	isBackstageText,
 	parseCardFromSessionHead,
+	skinAtDepth,
 	summarizeToolResult,
 	toAssistantHistory,
 	toWireHistory,
@@ -118,6 +119,7 @@ import { registerAssistantRunner } from "../src/assistant-gateway.ts";
 import { sameCardPath } from "../src/paths.ts";
 import { toggleDisabledLore } from "../src/lorebook.ts";
 import { syncStoryPanelsFromDisk, syncStoryStateFromDisk } from "../src/story-sync.ts";
+import { applyPendingBackupRestore } from "../src/backup.ts";
 import { toolStartDetail } from "../src/activity-format.ts";
 import {
 	checkLatestRelease,
@@ -142,6 +144,11 @@ const newSessionFlag = process.argv.includes("--new");
 // 数据目录/配置文件：.rp-* → .liyuan-*，rp.config.json → liyuan.config.json
 for (const line of migrateLegacyLayout(cwd)) {
 	console.log(`[liyuan] 迁移 ${line}`);
+}
+
+// 待恢复备份（导入备份后重启触发）：在装载任何会话/素材之前精确铺回数据
+for (const line of applyPendingBackupRestore(cwd, agentHome)) {
+	console.log(`[liyuan] 恢复 ${line}`);
 }
 
 // 自操作接口（LIYUAN_HTTP → 剧情 system prompt）已退役（2026-07-14）：
@@ -240,14 +247,17 @@ let updateCheck: UpdateCheckResult | null = null;
 let updateBusy = false;
 
 const UPDATE_SUPERVISED = process.env.LIYUAN_SUPERVISED === "1";
-const pushUpdate = () => broadcast({ type: "update", update: { ...updateState, supervised: UPDATE_SUPERVISED } });
+/** Docker 部署：升级靠宿主机 git pull + rebuild，容器内不下载 zip（覆盖只写可写层、重建即丢） */
+const IS_DOCKER = existsSync("/.dockerenv") || process.env.LIYUAN_DOCKER === "1";
+const pushUpdate = () =>
+	broadcast({ type: "update", update: { ...updateState, supervised: UPDATE_SUPERVISED, dockerDeploy: IS_DOCKER } });
 
 /** 启动后静默检查一次；失败不提示（manual 时才把 error 带给 UI） */
 const runUpdateCheck = async (manual: boolean): Promise<void> => {
 	// 已有暂存包：直接就绪态（跨重启持久；旧暂存版本低于当前版则丢弃）
 	const pending = readPendingUpdate(cwd);
 	if (pending) {
-		if (pending.version === APP_VERSION || pending.version < APP_VERSION) {
+		if (IS_DOCKER || pending.version === APP_VERSION || pending.version < APP_VERSION) {
 			discardPendingUpdate(cwd);
 		} else {
 			updateState = {
@@ -288,6 +298,7 @@ const runUpdateCheck = async (manual: boolean): Promise<void> => {
 
 /** 下载并暂存（进度限流 500ms 一帧）；完成后 ready，失败回 available 带 error */
 const startUpdateDownload = async (mirror?: string): Promise<void> => {
+	if (IS_DOCKER) throw new Error("Docker 部署请到宿主机执行 git pull && docker compose up -d --build");
 	if (updateBusy) throw new Error("已在下载中");
 	if (!updateCheck?.hasUpdate || !updateCheck.asset) throw new Error("没有可下载的更新");
 	updateBusy = true;
@@ -953,7 +964,9 @@ const bindSession = async () => {
 				break;
 			}
 			case "message_end": {
-				const wire = toWireMsg(event.message, names, { skin: currentDisplaySkin() });
+				// 刚生成的这条就是最新消息（depth 0）——作者的深度限定按此筛，
+				// 否则「N 楼外删掉」这类规则会当场把本拍的状态栏删了
+				const wire = toWireMsg(event.message, names, { skin: skinAtDepth(currentDisplaySkin(), 0) });
 				// user 消息在 prompt 受理时已回显，这里跳过防重
 				if (wire && wire.channel !== "user") {
 					broadcast({ type: "message", message: wire });
@@ -1129,6 +1142,7 @@ const restHost: RestHost = {
 			api: typeof sample.api === "string" ? sample.api : undefined,
 			envKey,
 			models: all.map((m) => ({
+				...(m as Record<string, unknown>),
 				id: m.id,
 				name: m.name || m.id,
 				reasoning: m.reasoning === true,
@@ -1477,6 +1491,39 @@ const restHost: RestHost = {
 		sessionId: session.sessionId,
 		card: cardPath || undefined,
 	}),
+	// 预设 AI 分拣等旁路声明：调当前会话模型做一次性判断（复用 streamSimple，同 StageEngine.#sideText）
+	runSideText: async (systemPrompt, userText, opts) => {
+		const model = session.model;
+		if (!model) return { error: "无可用模型" };
+		let auth: { apiKey?: string; headers?: Record<string, string> } = {};
+		try {
+			auth = (await session.modelRegistry.getApiKeyAndHeaders(model as never)) as typeof auth;
+		} catch (e) {
+			return { error: e instanceof Error ? e.message : String(e) };
+		}
+		const streamFn = streamSimple as unknown as StageStreamFn;
+		try {
+			const s = streamFn(
+				model as unknown as StageModelLike,
+				{ systemPrompt, messages: [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }] },
+				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: opts?.maxTokens ?? 4096, reasoning: opts?.reasoning ?? "off", signal: opts?.signal },
+			);
+			let final: AssistantMsgLike | null = null;
+			for await (const e of s) {
+				if (e.type === "done") final = e.message ?? null;
+				else if (e.type === "error") return { error: e.error?.errorMessage || `stopReason=${e.error?.stopReason ?? "?"}` };
+			}
+			if (!final) return { error: "流未产出最终消息" };
+			const text = final.content
+				.filter((c) => c.type === "text")
+				.map((c) => c.text ?? "")
+				.join("")
+				.trim();
+			return text || { error: "最终消息无文本" };
+		} catch (err) {
+			return { error: err instanceof Error ? err.message : String(err) };
+		}
+	},
 };
 
 // 启动时：liyuan.agent.json → models.json，重绑模型 + 应用思考档（配置 → 当前生效）

@@ -8,6 +8,7 @@ import { useRef, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut, downloadText, type SkillInfo } from "../api.ts";
 import { IconPencil, IconTrash } from "./icons.tsx";
 import { ConfirmButton, PanelStatus, Toggle, useAction, usePanelData } from "./kit.tsx";
+import { SkillLibrary } from "./SkillLibrary.tsx";
 
 // ---------- MCP 类型（与 /api/mcp 对齐） ----------
 
@@ -714,7 +715,7 @@ export function PowersPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		<div className="panel-body">
 			<div className="seg-row seg-tabs">
 				<button className={`seg ${tab === "skills" ? "active" : ""}`} onClick={() => setTab("skills")}>
-					技能（{list.length}）
+					技能
 				</button>
 				<button className={`seg ${tab === "mcp" ? "active" : ""}`} onClick={() => setTab("mcp")}>
 					MCP
@@ -722,18 +723,23 @@ export function PowersPanel({ toast }: { toast: (level: "info" | "warning" | "er
 			</div>
 
 			{tab === "skills" && (
-				<section className="sp-section">
-					<PanelStatus loading={loading} error={error} hasData={!!data} />
-					{data && (
-						<>
-							<NewSkillForm onCreated={reload} toast={toast} />
-							{list.length === 0 && <div className="sp-empty">技能库是空的，可手动新建或导入。</div>}
-							{list.map((s) => (
-								<SkillRow key={s.file} s={s} busy={busy} onSaved={reload} onDelete={remove} toast={toast} />
-							))}
-						</>
-					)}
-				</section>
+				<>
+					<div className="preset-chan-head"><span className="lore-meta"><b>扮演教导</b> · 写作/文风/场面</span></div>
+					<SkillLibrary toast={toast} />
+					<div className="preset-chan-head" style={{ marginTop: 12 }}><span className="lore-meta"><b>办事笔记</b> · 外部服务调用</span></div>
+					<section className="sp-section">
+						<PanelStatus loading={loading} error={error} hasData={!!data} />
+						{data && (
+							<>
+								<NewSkillForm onCreated={reload} toast={toast} />
+								{list.length === 0 && <div className="sp-empty">还没有办事笔记，可手动新建或导入。</div>}
+								{list.map((s) => (
+									<SkillRow key={s.file} s={s} busy={busy} onSaved={reload} onDelete={remove} toast={toast} />
+								))}
+							</>
+						)}
+					</section>
+				</>
 			)}
 
 			{tab === "mcp" && <McpSection toast={toast} />}

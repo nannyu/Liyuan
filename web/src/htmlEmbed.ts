@@ -2,7 +2,7 @@
  * 对话流 HTML 底座：从正文中切出 ```html 代码块 / 整页文档 / 顶层标准容器块，供 Messages 渲染。
  * 卡皮肤产物（div 等）在此切成 html 段进无痕帧；自定义状态标签不在此列。
  *
- * 整页界面卡(如 Living With Slaves 开局正则)：替换结果是「``` + 完整 HTML 文档 + ```」，
+ * 整页界面卡(如 某卡 开局正则)：替换结果是「``` + 完整 HTML 文档 + ```」，
  * 文档内可能含大量 ``` 字符——必须用「首开 + 末闭」认领，禁止非贪婪中途截断再被 splitTopLevel 撕碎。
  */
 
@@ -185,6 +185,19 @@ export function splitHtmlParts(text: string): TextPart[] {
 		const html = text.trim();
 		return [{ kind: "html", html, scripts: htmlLooksInteractive(html) }];
 	}
+	// 裸 HTML 文档 + 短前缀（梨园开场白的「【开场 · 卡名】」就是这种；findFencedHtmlDocument
+	// 早就容忍这个前缀，裸文档这条原先要求文档落在第 0 位，于是整份文档被 splitTopLevelBlocks
+	// 按顶层元素切成一堆碎帧）。前缀作为文本交出，文档整份进一帧。
+	const bare = findBareHtmlDocument(text);
+	if (bare) {
+		const parts: TextPart[] = [];
+		const pre = text.slice(0, bare.start);
+		if (pre.trim()) parts.push({ kind: "text", text: pre });
+		parts.push({ kind: "html", html: bare.html, scripts: htmlLooksInteractive(bare.html) });
+		const post = text.slice(bare.end);
+		if (post.trim()) parts.push(...splitHtmlParts(post));
+		return parts;
+	}
 	// lang: html | html scripts | html+js | html+script（短片段，非贪婪；大文档应已被 claimFenced 吃掉）
 	const re = /```html(?:\s*\+?\s*(?:scripts?|js))?[ \t]*\r?\n([\s\S]*?)```/gi;
 	const parts: TextPart[] = [];
@@ -214,6 +227,18 @@ export function splitHtmlParts(text: string): TextPart[] {
 export function looksLikeHtmlDocument(text: string): boolean {
 	const t = text.trimStart().slice(0, 200).toLowerCase();
 	return t.startsWith("<!doctype html") || t.startsWith("<html");
+}
+
+/**
+ * 行首起的一份完整裸 HTML 文档（无围栏），允许它前面有短前言。
+ * 与 looksLikeHtmlDocument 的区别只有一个：不要求文档落在第 0 位，故要求 `</html>` 收尾兜底，
+ * 避免把正文里偶然出现的 `<html` 字样当文档开头。
+ */
+function findBareHtmlDocument(text: string): { html: string; start: number; end: number } | null {
+	const m = /(?:^|\n)[ \t]*(<!doctype\s+html\b[\s\S]*?<\/html\s*>|<html[\s>][\s\S]*?<\/html\s*>)/i.exec(text);
+	if (!m?.[1]) return null;
+	const start = m.index + m[0].indexOf(m[1]);
+	return { html: m[1], start, end: start + m[1].length };
 }
 
 /**
