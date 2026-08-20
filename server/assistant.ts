@@ -434,7 +434,7 @@ function createStagehandTools(cwd: string, bridge: StoryBridge, hooks: Stagehand
 			name: "config_write",
 			label: "改配置",
 			description:
-				'Patch the project config (whitelisted fields only: userName/userPersona/displayName/language/scanDepth/maxLoreInjections/greeting/greetingIndex/lorebooks/preset/disabledLore/creationMode/compactEveryNTurns/rosterRefreshEveryNTurns…). Pass a JSON object string, e.g. {"scanDepth":6}. Takes effect from the next story turn. Confirm with the user first.',
+				'Patch the project config (whitelisted fields only: userName/userPersona/displayName/language/scanDepth/maxLoreInjections/greeting/greetingIndex/lorebooks/preset/disabledLore/creationMode…). Pass a JSON object string, e.g. {"scanDepth":6}. Takes effect from the next story turn. Confirm with the user first.',
 			parameters: Type.Object({
 				patch: Type.String({ description: 'JSON 对象字符串，如 {"language":"中文"}' }),
 			}),

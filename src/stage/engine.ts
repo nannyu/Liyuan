@@ -56,7 +56,6 @@ import {
 	type RpSummaryData,
 } from "./compact.ts";
 import { runScribeTurn, STATE_ENTRY_TYPE } from "./scribe-run.ts";
-import { runRosterRefresh } from "./roster-refresh.ts";
 import {
 	MAX_ROUNDS,
 	runStageTool,
@@ -942,36 +941,6 @@ export class StageEngine {
 			);
 			if (r.kind === "failed") console.error(`[stage-scribe] 记账跳过：${r.error}`);
 			sm.flush();
-		}
-
-		// 登场名录定拍刷新：名称在 applyPatch 时立即入册；每 N 个完整叙事拍，场记根据
-		// 最新账本 + 最近剧情更新一句话近况。进度写进 rp-state，故 rewind/swipe/分支天然隔离；
-		// 失败不推进进度，下一拍重试。放在记账后，确保它看到本拍刚落下的最新事实。
-		if (entryId && !aborted && finalText) {
-			try {
-				const refreshBranch = sm.getBranch() as BranchEntryLike[];
-				const refreshed = await runRosterRefresh(
-					{
-						sideText: (sp, ut) => this.#sideText(model, sp, ut, { apiKey, headers }, 2048),
-						appendStateEntry: (next) => sm.appendCustomEntry(STATE_ENTRY_TYPE, next),
-						getLeafId: () => sm.getLeafId(),
-						stateFile: this.#deps.getStateFile?.(sm.getSessionId()),
-						onActivity: (detail) => ev.onActivity?.(detail),
-					},
-					{
-						branch: refreshBranch,
-						state: stateFromBranch(refreshBranch),
-						everyNTurns: config.rosterRefreshEveryNTurns ?? 5,
-						charName: materials.card.name,
-						userName: materials.config.userName,
-					},
-				);
-				if (refreshed.kind === "failed") console.error(`[stage-roster] 名录刷新跳过：${refreshed.error}`);
-				if (refreshed.kind === "refreshed") sm.flush();
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				console.error(`[stage-roster] 名录刷新异常：${message}`);
-			}
 		}
 
 		// M4 长局压缩：攒够拍数就把早期剧情摘要成 rp-summary（装配时回读为【前情提要】）。

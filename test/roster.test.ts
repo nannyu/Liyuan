@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { applyPatch, applyRosterRefresh, defaultState, formatRosterIndex } from "../src/state.ts";
+import { applyPatch, defaultState, formatRosterIndex } from "../src/state.ts";
 
 test("名录登记：角色/物品/剧情线登场即入册，一句话取登记时状态", () => {
 	const r1 = applyPatch(defaultState(), {
@@ -14,41 +14,10 @@ test("名录登记：角色/物品/剧情线登场即入册，一句话取登记
 	assert.ok("寻找失踪的妹妹" in (r1.state.roster?.events ?? {}));
 });
 
-test("名录简介在两次定拍刷新之间保持稳定", () => {
+test("名录只增不改：状态更新不churn已登记的一句话", () => {
 	const r1 = applyPatch(defaultState(), { characters: { 苏茜: { status: "初登场" } } });
 	const r2 = applyPatch(r1.state, { characters: { 苏茜: { status: "重伤垂死" } } });
 	assert.equal(r2.state.roster?.characters["苏茜"], "初登场");
-});
-
-test("名录定拍刷新：只更新已有条目并记录分支内拍数", () => {
-	const initial = applyPatch(defaultState(), {
-		characters: { 苏茜: { status: "初登场" } },
-		inventory: ["铁剑"],
-		plot_threads: ["寻找失踪的妹妹"],
-	}).state;
-	const refreshed = applyRosterRefresh(
-		initial,
-		{
-			characters: { 苏茜: "与主角结盟，负伤留守山门", 陌生人: "不得新增" },
-			items: { 铁剑: "已折断，由苏茜保管" },
-			events: { 寻找失踪的妹妹: "已找到线索，追查至北境" },
-		},
-		5,
-	);
-	assert.equal(refreshed.state.roster?.characters["苏茜"], "与主角结盟，负伤留守山门");
-	assert.equal(refreshed.state.roster?.items["铁剑"], "已折断，由苏茜保管");
-	assert.equal(refreshed.state.roster?.events["寻找失踪的妹妹"], "已找到线索，追查至北境");
-	assert.ok(!("陌生人" in (refreshed.state.roster?.characters ?? {})), "刷新器不得擅自新增名字");
-	assert.deepEqual(refreshed.state.rosterRefresh, { lastTurn: 5 });
-	assert.ok(refreshed.warnings.some((w) => w.includes("陌生人")));
-});
-
-test("名录定拍刷新：空结果也推进周期；非法值不覆盖既有简介", () => {
-	const initial = applyPatch(defaultState(), { characters: { 苏茜: { status: "初登场" } } }).state;
-	const refreshed = applyRosterRefresh(initial, { characters: { 苏茜: null } }, 9);
-	assert.equal(refreshed.state.roster?.characters["苏茜"], "初登场");
-	assert.deepEqual(refreshed.state.rosterRefresh, { lastTurn: 9 });
-	assert.ok(refreshed.warnings.some((w) => w.includes("需要字符串")));
 });
 
 test("名录不删：活跃状态里移除后名录仍在案", () => {

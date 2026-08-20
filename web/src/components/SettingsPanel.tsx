@@ -720,7 +720,6 @@ export function SettingsPanel({ toast }: { toast: (level: "info" | "warning" | "
 	const [scanDepth, setScanDepth] = useState(4);
 	const [maxLore, setMaxLore] = useState(3);
 	const [compactEvery, setCompactEvery] = useState(30);
-	const [rosterRefreshEvery, setRosterRefreshEvery] = useState(5);
 	const [backendControl, setBackendControl] = useState(true);
 	const [askMode, setAskMode] = useState(false);
 	const [dirty, setDirty] = useState(false);
@@ -731,7 +730,6 @@ export function SettingsPanel({ toast }: { toast: (level: "info" | "warning" | "
 			setScanDepth(data.config.scanDepth);
 			setMaxLore(data.config.maxLoreInjections);
 			setCompactEvery(data.config.compactEveryNTurns ?? 30);
-			setRosterRefreshEvery(data.config.rosterRefreshEveryNTurns ?? 5);
 			setBackendControl(data.config.backendControl !== false);
 			setAskMode(data.config.creationMode === "ask");
 			setDirty(false);
@@ -755,7 +753,6 @@ export function SettingsPanel({ toast }: { toast: (level: "info" | "warning" | "
 				scanDepth,
 				maxLoreInjections: maxLore,
 				compactEveryNTurns: compactEvery,
-				rosterRefreshEveryNTurns: rosterRefreshEvery,
 				backendControl,
 				creationMode: askMode ? "ask" : "silent",
 			});
@@ -799,21 +796,6 @@ export function SettingsPanel({ toast }: { toast: (level: "info" | "warning" | "
 							max={10}
 							onChange={(v) => {
 								setMaxLore(v);
-								touch();
-							}}
-						/>
-					</section>
-
-					<section className="sp-section">
-						<h4>剧情连续性</h4>
-						<SliderField
-							label="登场名录刷新周期"
-							hint="每 N 个完整剧情轮，由场记把人物、物品、事件的一句话更新为最近已知状态；0 = 关闭"
-							value={rosterRefreshEvery}
-							min={0}
-							max={20}
-							onChange={(v) => {
-								setRosterRefreshEvery(v);
 								touch();
 							}}
 						/>
