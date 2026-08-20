@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildLoreAliasPrompt, buildScribeTurnPrompt, parseLoreAliases, parseScribeResult } from "../src/scribe.ts";
+import {
+	buildLoreAliasPrompt,
+	buildRosterRefreshPrompt,
+	buildScribeTurnPrompt,
+	parseLoreAliases,
+	parseRosterRefreshResult,
+	parseScribeResult,
+} from "../src/scribe.ts";
 import { withAliases } from "../src/lorebook.ts";
 import { defaultState } from "../src/state.ts";
 import type { LorebookEntry } from "../src/types.ts";
@@ -60,6 +67,32 @@ test("场记输出解析：unasked_turn 即使返回也丢弃", () => {
 	const hit = parseScribeResult('{"patch":{},"warnings":[],"unasked_turn":"未经询问即让盟友背叛"}');
 	assert.ok(hit);
 	assert.equal(hit.unaskedTurn, null);
+});
+
+test("名录刷新提示词：只准更新已有键，并强调最近已知状态和用户手改", () => {
+	const state = defaultState();
+	state.roster = { characters: { 苏茜: "初登场" }, items: {}, events: {} };
+	const { systemPrompt, userText } = buildRosterRefreshPrompt({
+		state,
+		conversationText: "沈舟：留下来。\n\n云澜：苏茜负伤留在山门。",
+		charName: "云澜",
+		userName: "沈舟",
+	});
+	assert.ok(systemPrompt.includes("不得新增、删除、改名"));
+	assert.ok(systemPrompt.includes("最近已知状态"));
+	assert.ok(systemPrompt.includes("用户手工校正"));
+	assert.ok(userText.includes('"苏茜": "初登场"'));
+	assert.ok(userText.includes("苏茜负伤留在山门"));
+});
+
+test("名录刷新输出解析：支持围栏和前言，只取三张表", () => {
+	const parsed = parseRosterRefreshResult(
+		'结果如下：\n```json\n{"roster":{"characters":{"苏茜":"负伤留守"},"items":{},"extra":{"x":"y"}}}\n```',
+	);
+	assert.deepEqual(parsed, { characters: { 苏茜: "负伤留守" }, items: {} });
+	assert.deepEqual(parseRosterRefreshResult('{"roster":{}}'), {});
+	assert.equal(parseRosterRefreshResult('{"characters":{"苏茜":"负伤"}}'), null);
+	assert.equal(parseRosterRefreshResult("没有 JSON"), null);
 });
 
 test("别名提示词与解析", () => {

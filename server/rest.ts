@@ -390,6 +390,8 @@ const CONFIG_EDITABLE = new Set([
 	"disabledLore",
 	"backendControl",
 	"creationMode",
+	"compactEveryNTurns",
+	"rosterRefreshEveryNTurns",
 	"assistantModel",
 ]);
 
@@ -410,6 +412,13 @@ export function applyConfigPatch(config: RpConfig, patch: Record<string, unknown
 	next.maxLoreInjections = clampInt(next.maxLoreInjections, 0, 20, DEFAULT_CONFIG.maxLoreInjections);
 	// 固定楼层压缩周期：0=关闭主动压缩；上限防手滑（500 轮≈永不触发）
 	next.compactEveryNTurns = clampInt(next.compactEveryNTurns, 0, 500, DEFAULT_CONFIG.compactEveryNTurns ?? 30);
+	// 登场名录刷新周期：0=关闭；高于 100 拍已没有实用意义
+	next.rosterRefreshEveryNTurns = clampInt(
+		next.rosterRefreshEveryNTurns,
+		0,
+		100,
+		DEFAULT_CONFIG.rosterRefreshEveryNTurns ?? 5,
+	);
 	next.greeting = next.greeting === true;
 	// 决策门禁档位：只认 ask / silent；非法值删除（扩展缺省按 silent）
 	if (next.creationMode !== "ask" && next.creationMode !== "silent") delete next.creationMode;

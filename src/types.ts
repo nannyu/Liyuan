@@ -37,14 +37,20 @@ export interface LorebookEntry {
 }
 
 /**
- * 登场名录：人物/物品/事件三张**追加式索引表**（供 agent 索引，不是给正文全量注入的内容）。
- * 登场过就永远在案——活跃状态里删掉（离场/消耗/了结）后名录仍保留，
- * 配合 memory_search 可召回细节。值为登记时的一句话（可空）。
+ * 登场名录：人物/物品/事件三张**持久索引表**（供 agent 索引，不是给正文全量注入的内容）。
+ * 登场过就永远在案——活跃状态里删掉（离场/消耗/了结）后名录仍保留；
+ * 名称首次出现时立即登记，一句话简介由收尾场记定拍刷新为最近已知状态。
  */
 export interface StateRoster {
 	characters: Record<string, string>;
 	items: Record<string, string>;
 	events: Record<string, string>;
+}
+
+/** 登场名录定拍刷新的分支内进度；跟随 rp-state 快照回退/分叉。 */
+export interface RosterRefreshState {
+	/** 上次成功刷新时，当前分支已完成的叙事拍数。 */
+	lastTurn: number;
 }
 
 /** 结构化世界状态（v0 schema，可扩展） */
@@ -63,6 +69,8 @@ export interface WorldState {
 	plot_threads: string[];
 	/** 登场名录（applyPatch 咽喉点自动登记；旧存档无此字段按空处理） */
 	roster?: StateRoster;
+	/** 名录刷新调度元数据（内部字段，不注入世界状态，也不开放给剧情模型修改）。 */
+	rosterRefresh?: RosterRefreshState;
 }
 
 export interface CharacterState {
@@ -119,6 +127,11 @@ export interface RpConfig {
 	 */
 	compactEveryNTurns?: number;
 	/**
+	 * 登场名录刷新：每 N 个已完成叙事轮，由收尾场记重写人物/物品/事件的一句话近况。
+	 * 0 = 关闭；缺省 5。名称仍在首次出现时立即登记。
+	 */
+	rosterRefreshEveryNTurns?: number;
+	/**
 	 * 给排练断粮（M4.5 慢因 A）：末端明示「思考只用于读题与决定，不在思考里起草正文」。
 	 * **默认关**——2026-08-03 high 档 3 轮对照实测证伪：墙钟 +10%、思考 +39%，且组内
 	 * σ≈5.9s 远大于组间差 2.5s（模型 high 档思考量本身随机，与这句话无关）。
@@ -146,6 +159,7 @@ export const DEFAULT_CONFIG: RpConfig = {
 	greeting: true,
 	backendControl: true,
 	compactEveryNTurns: 30,
+	rosterRefreshEveryNTurns: 5,
 };
 
 /** 宏替换上下文 */

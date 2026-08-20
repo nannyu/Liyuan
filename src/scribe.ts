@@ -5,7 +5,8 @@
  * 连续性/代打等事后审查已移除（费 token 且用户反馈无用）。
  */
 
-import type { WorldState } from "./types.ts";
+import type { StateRoster, WorldState } from "./types.ts";
+import type { RosterRefreshPatch } from "./state.ts";
 
 export interface ScribePromptInput {
 	/** 当前世界状态（JSON 序列化前的对象） */
@@ -119,6 +120,107 @@ export function parseScribeResult(text: string): ScribeResult | null {
 		idx = start + 1;
 	}
 	return null;
+}
+
+// ---------- 登场名录定拍刷新 ----------
+
+export interface RosterRefreshPromptInput {
+	state: WorldState;
+	/** 自上次刷新后（或上限窗口内）的最近剧情对话 */
+	conversationText: string;
+	charName: string;
+	userName: string;
+}
+
+export function buildRosterRefreshPrompt(input: RosterRefreshPromptInput): {
+	systemPrompt: string;
+	userText: string;
+} {
+	const { state, conversationText, charName, userName } = input;
+	const systemPrompt = `你是一场长篇角色扮演的名录场记。剧情已经定稿，你只维护【登场名录】中已有条目的一句话近况，让名录随剧情发展而更新。
+
+只输出一个 JSON 对象：
+{"roster":{"characters":{"已有名字":"最近已知近况"},"items":{"已有名称":"当前归属、状态或最后去向"},"events":{"已有剧情线":"当前进展或最终结果"}}}
+
+规则：
+- 只写最近剧情已经明确改变、因而需要更新的条目；没有变化的表可省略，完全无变化输出 {"roster":{}}。
+- 键必须逐字使用现有名录里的键；不得新增、删除、改名、合并条目，不得输出 null。
+- 每条简介不超过 60 个字符，写“最近已知状态”，不要复述初次登场印象。
+- 人物：概括与${userName}的最新关系，以及当前处境；离场人物写离场时的最后已知状态。
+- 物品：写当前持有人、损毁/消耗情况或最后已知去向。
+- 事件：写推进到哪一步；已经了结则写清结果。
+- 现有简介可能经用户手工校正。只有最近剧情提供了明确的新变化才覆盖；不得用猜测改写。
+- 只做名录数据，不续写剧情，不评价文本，不输出 JSON 以外的文字。`;
+
+	const userText = `【主演】${charName}
+【用户角色】${userName}
+
+【当前世界状态】
+${JSON.stringify(
+	{
+		time: state.time,
+		location: state.location,
+		characters: state.characters,
+		inventory: state.inventory,
+		flags: state.flags,
+		plot_threads: state.plot_threads,
+	},
+	null,
+	2,
+)}
+
+【当前登场名录】
+${JSON.stringify(state.roster ?? { characters: {}, items: {}, events: {} }, null, 2)}
+
+【最近剧情】
+${conversationText || "（无可用正文；只依据当前状态，拿不准就不改。）"}
+
+请刷新已有条目的一句话近况。`;
+	return { systemPrompt, userText };
+}
+
+/** 宽容解析名录场记输出；结构校验和既有键约束由 applyRosterRefresh 完成。 */
+export function parseRosterRefreshResult(text: string): RosterRefreshPatch | null {
+	let t = text.trim();
+	const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/);
+	if (fence) t = fence[1].trim();
+	let idx = 0;
+	while (true) {
+		const start = t.indexOf("{", idx);
+		if (start === -1) return null;
+		let depth = 0;
+		let inStr = false;
+		let esc = false;
+		for (let i = start; i < t.length; i++) {
+			const ch = t[i];
+			if (inStr) {
+				if (esc) esc = false;
+				else if (ch === "\\") esc = true;
+				else if (ch === '"') inStr = false;
+				continue;
+			}
+			if (ch === '"') inStr = true;
+			else if (ch === "{") depth++;
+			else if (ch === "}") {
+				depth--;
+				if (depth !== 0) continue;
+				try {
+					const obj = JSON.parse(t.slice(start, i + 1)) as { roster?: unknown };
+					if (!obj || typeof obj !== "object" || Array.isArray(obj)) break;
+					if (!obj.roster || typeof obj.roster !== "object" || Array.isArray(obj.roster)) break;
+					const roster = obj.roster as Partial<Record<keyof StateRoster, unknown>>;
+					const patch: RosterRefreshPatch = {};
+					for (const table of ["characters", "items", "events"] as const) {
+						if (roster[table] !== undefined) patch[table] = roster[table] as Record<string, unknown>;
+					}
+					return patch;
+				} catch {
+					break;
+				}
+			}
+		}
+		idx = start + 1;
+	}
 }
 
 // ---------- 世界书中文别名（修复：专有名词中译后英文关键词地板失效） ----------

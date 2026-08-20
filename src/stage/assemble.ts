@@ -482,7 +482,7 @@ export function buildStageInjection({
 
 	if (rosterIndex) {
 		blocks.push(
-			`【登场名录】以下条目登场过但已不在当前状态（离场/失去/了结）：${rosterIndex}。剧情重新带回其中条目时忠于既定事实，${
+			`【登场名录】以下条目登场过但已不在当前状态（离场/失去/了结），括号内是定拍维护的最近已知状态：${rosterIndex}。剧情重新带回其中条目时忠于既定事实，${
 				tools === false
 					? "细节记不清就模糊带过，不得凭空改写"
 					: "细节记不清就**先用 `memory_search` 查**，查不到才模糊带过，不得凭空改写"

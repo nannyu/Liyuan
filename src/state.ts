@@ -218,8 +218,11 @@ export function formatState(state: WorldState): string {
 /** 名录各表容量上限（超出丢最旧——Record 保持插入序）。防剧情线改写措辞导致的近重复无限累积。 */
 const ROSTER_CAPS = { characters: 100, items: 100, events: 60 } as const;
 
-/** 名录登记时给人物的一句话预算 */
+/** 名录初次登记时给人物的一句话预算 */
 const ROSTER_BLURB_MAX = 30;
+
+/** 场记刷新后的一句话预算（与用户手改上限一致） */
+const ROSTER_REFRESH_BLURB_MAX = 60;
 
 function capRoster(reg: Record<string, string>, cap: number): Record<string, string> {
 	const keys = Object.keys(reg);
@@ -231,8 +234,8 @@ function capRoster(reg: Record<string, string>, cap: number): Record<string, str
 
 /**
  * 名录登记（applyPatch 咽喉点调用）：把当前活跃的人物/物品/剧情线并入名录。
- * 只增不改——已登记条目不追新鲜度（名录记「存在过」，细节靠 memory_search 召回）；
- * 活跃状态里删掉的条目名录保留。
+ * 此处只负责名称即时入册，不在每次状态补丁时重写简介；简介由收尾场记定拍刷新。
+ * 活跃状态里删掉的条目名录保留，作为 memory_search 的召回索引。
  */
 function registerRoster(next: WorldState): void {
 	const r: StateRoster = next.roster ?? { characters: {}, items: {}, events: {} };
@@ -250,6 +253,54 @@ function registerRoster(next: WorldState): void {
 		items: capRoster(r.items, ROSTER_CAPS.items),
 		events: capRoster(r.events, ROSTER_CAPS.events),
 	};
+}
+
+export type RosterRefreshPatch = Partial<Record<keyof StateRoster, Record<string, unknown>>>;
+
+/**
+ * 应用收尾场记给出的名录刷新：只准改已有条目的一句话，不准新增、删除或改名。
+ * 无论本次有没有简介变化，只要响应合法并通过叶守卫，就推进 lastTurn，避免每拍重复调用。
+ */
+export function applyRosterRefresh(
+	state: WorldState,
+	patch: RosterRefreshPatch,
+	completedTurns: number,
+): PatchResult {
+	const next: WorldState = structuredClone(state);
+	const applied: string[] = [];
+	const warnings: string[] = [];
+	const roster = next.roster ?? { characters: {}, items: {}, events: {} };
+
+	for (const table of ["characters", "items", "events"] as const) {
+		const updates = patch[table];
+		if (updates === undefined) continue;
+		if (!updates || typeof updates !== "object" || Array.isArray(updates)) {
+			warnings.push(`roster.${table} 需要对象，已忽略`);
+			continue;
+		}
+		for (const [name, value] of Object.entries(updates)) {
+			if (!(name in roster[table])) {
+				warnings.push(`roster.${table}.${name} 不在现有名录，已忽略`);
+				continue;
+			}
+			if (typeof value !== "string") {
+				warnings.push(`roster.${table}.${name} 需要字符串，已忽略`);
+				continue;
+			}
+			const blurb = value.trim().slice(0, ROSTER_REFRESH_BLURB_MAX);
+			if (!blurb || blurb === roster[table][name]) continue;
+			roster[table][name] = blurb;
+			applied.push(`roster.${table}.${name} 已刷新`);
+		}
+	}
+
+	next.roster = roster;
+	if (Number.isFinite(completedTurns) && completedTurns >= 0) {
+		next.rosterRefresh = { lastTurn: Math.floor(completedTurns) };
+	} else {
+		warnings.push("名录刷新拍数无效，未推进刷新进度");
+	}
+	return { state: next, applied, warnings };
 }
 
 /** 名录索引单节的字符预算（超出按条目边界截断，补「等 N 项」） */

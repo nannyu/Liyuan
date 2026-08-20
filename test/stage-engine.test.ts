@@ -44,6 +44,41 @@ const makeEngine = (
  */
 const fauxScribeEmpty = () => fauxAssistantMessage(JSON.stringify({ patch: {} }));
 
+test("引擎：每五个完整剧情拍在记账后刷新登场名录", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		const responses: unknown[] = [];
+		for (let turn = 1; turn <= 5; turn++) {
+			responses.push(fauxAssistantMessage(`第 ${turn} 拍正文。`));
+			responses.push(
+				turn === 1
+					? fauxAssistantMessage(
+							JSON.stringify({ patch: { characters: { 苏茜: { affinity: 0, status: "初登场", notes: "" } } } }),
+						)
+					: fauxScribeEmpty(),
+			);
+		}
+		responses.push(fauxAssistantMessage('{"roster":{"characters":{"苏茜":"与沈舟结盟，负伤留守山门"}}}'));
+		reg.setResponses(responses as never);
+
+		const activities: string[] = [];
+		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"), { onActivity: (detail) => activities.push(detail) });
+		for (let turn = 1; turn <= 5; turn++) await engine.performTurn(`第 ${turn} 拍行动。`);
+
+		const branch = sm.getBranch() as Array<{ type: string; customType?: string; data?: unknown }>;
+		const states = branch.filter((entry) => entry.type === "custom" && entry.customType === "rp-state");
+		const latest = states.at(-1)?.data as { roster?: { characters: Record<string, string> }; rosterRefresh?: { lastTurn: number } };
+		assert.equal(latest.roster?.characters["苏茜"], "与沈舟结盟，负伤留守山门");
+		assert.deepEqual(latest.rosterRefresh, { lastTurn: 5 });
+		assert.ok(activities.some((detail) => detail.includes("登场名录已刷新")));
+		assert.equal(reg.getPendingResponseCount(), 0, "五拍正文 + 五次记账 + 一次名录刷新");
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("引擎：一拍全链路（user 落树 → 流式 → assistant 落树 → 谢幕）", async () => {
 	const { cwd, sm } = makeStage();
 	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
